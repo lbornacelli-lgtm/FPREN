@@ -49,7 +49,6 @@ weather_service.out
 feeds/
 sample_feed.json
 weather_data/
-weather_rss/
 
 # Other projects (not yet tracked)
 chatgpt_env/

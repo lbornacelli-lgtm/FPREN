@@ -109,6 +109,9 @@ def dashboard():
             # convert last_success from ISODate / datetime
             if isinstance(last_success, str):
                 last_success = datetime.fromisoformat(last_success)
+            # Normalise to UTC-aware for comparison
+            if last_success.tzinfo is None:
+                last_success = last_success.replace(tzinfo=timezone.utc)
             age_min = round((now - last_success).total_seconds() / 60, 1)
 
         status = feed.get("status", "UNKNOWN")

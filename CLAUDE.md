@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is a **Weather Station monitoring system** for Gainesville, FL and surrounding areas (Ocala, Palatka). It fetches NOAA/NWS RSS feeds, stores data in MongoDB, and provides multiple interfaces for monitoring and alerting.
+This is a **Weather Station broadcast system** for Gainesville, FL and surrounding areas (Ocala, Palatka). It fetches NOAA/NWS RSS feeds and alerts, stores data in MongoDB, and drives a full audio broadcast chain — converting weather data to speech via TTS, scheduling audio content (alerts, imaging, educational, traffic), and transmitting over an FM radio transmitter. Multiple interfaces are provided for monitoring and alerting.
 
 ## Repository Structure
 

@@ -31,6 +31,10 @@ ALERT_FOLDER_MAP = {
     "extreme wind warning":         "hurricane",
     "hurricane force wind warning": "hurricane",
     "hurricane force wind watch":   "hurricane",
+    # Fog
+    "dense fog advisory":           "fog",
+    "freezing fog advisory":        "fog",
+    "dense smoke advisory":         "fog",
     # Fire
     "red flag warning":             "fire",
     "fire weather watch":           "fire",

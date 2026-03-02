@@ -78,6 +78,11 @@ feeds/
 sample_feed.json
 
 # -----------------------------------------------
+# System config (not project files)
+# -----------------------------------------------
+etc/
+
+# -----------------------------------------------
 # Notes / scratch files
 # -----------------------------------------------
 "COMPLETE weather_station Structure.txt"

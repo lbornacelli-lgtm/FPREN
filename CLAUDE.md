@@ -109,18 +109,25 @@ XML files kept for **7 days** under `weather_rss/feeds/`.
 ## Common Commands
 
 ```bash
-# Start all services
-cd /home/lh_admin/weather_rss && docker compose up -d
+# --- Weather RSS / Alerts (Docker) ---
+cd /home/lh_admin/weather_rss
 
-# View logs
-docker logs weather_rss_fetcher -f
-docker logs weather_alerts -f
+docker compose up -d                     # Start all containers
+docker compose ps                        # Check container status
+docker logs weather_rss_fetcher -f       # FL alert + NHC RSS logs
+docker logs weather_obs_fetcher -f       # ASOS observation logs
+docker logs weather_alerts -f            # Alert worker logs
+bash start_weather_gui.sh                # Launch Tkinter GUI monitor
 
-# Run GUI monitor
-cd /home/lh_admin/weather_rss && bash start_weather_gui.sh
+# --- Weather Station (audio + FM broadcast) ---
+cd /home/lh_admin/weather_station
 
-# Run mongo_tts app
-cd /home/lh_admin/mongo_tts && python app.py
+source venv/bin/activate                 # Activate virtualenv
+python main.py                           # Start station engine
+                                         # (drives TTS → audio chain → playlist → FM transmitter)
+
+# --- MongoDB TTS Monitor ---
+cd /home/lh_admin/mongo_tts && python app.py   # Flask app on port 5000
 ```
 
 ## Environment Variables

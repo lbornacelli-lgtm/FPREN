@@ -18,8 +18,7 @@ class FMTransmitter:
             return
 
         try:
-            # Example command — replace with your actual transmitter command
-            cmd = ["fm_transmit_command", wav_file]  
+            cmd = ["aplay", "-D", "plughw:0,3", wav_file]
             subprocess.run(cmd, check=True)
             self.logger.info(f"Broadcasting over FM: {wav_file}")
         except Exception as e:

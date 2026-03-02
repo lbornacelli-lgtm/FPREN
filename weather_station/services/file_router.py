@@ -34,6 +34,7 @@ ALERT_FOLDER_MAP = {
     "winter weather advisory":      "freeze",
     "ice storm warning":            "freeze",
     "blizzard warning":             "freeze",
+    "cold weather advisory":        "freeze",
 }
 
 # Root of the broadcast-facing audio library

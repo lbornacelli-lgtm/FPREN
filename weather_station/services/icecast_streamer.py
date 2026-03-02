@@ -102,7 +102,9 @@ class IcecastStreamer:
             "-ac", str(CHANNELS),
             "-i", FIFO_PATH,
             "-c:a", "libmp3lame", "-b:a", "128k",
+            "-ac", "2",          # upmix mono → stereo (Icecast expects stereo)
             "-f", "mp3",
+            "-content_type", "audio/mpeg",
             self._icecast_url(),
         ]
         self._ffmpeg = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)

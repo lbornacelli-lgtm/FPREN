@@ -34,6 +34,22 @@ services:
       - OUTPUT_DIR=/app/feeds
     command: python weather_rss.py
 
+  ipaws_fetcher:
+    build: .
+    container_name: weather_ipaws_fetcher
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - mongodb
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+      - LOG_FILE=/app/logs/ipaws.log
+      # Switch to production URL when ready:
+      # - IPAWS_BASE_URL=https://apps.fema.gov/IPAWSOPEN_EAS_SERVICE/rest/public/recent
+      - IPAWS_BASE_URL=https://tdl.apps.fema.gov/IPAWSOPEN_EAS_SERVICE/rest/public/recent
+    command: python ipaws_fetcher.py
+
   alert_worker:
     build: .
     container_name: weather_alerts

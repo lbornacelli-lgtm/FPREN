@@ -8,34 +8,68 @@ This is a **Weather Station monitoring system** for Gainesville, FL and surround
 
 ```
 /home/lh_admin/
-├── weather_rss/          # Core weather RSS service
-│   ├── weather_rss.py    # RSS feed fetcher (KGNV, KOCF, KPAK)
-│   ├── weather_service.py# Main service (fetches + stores to MongoDB)
-│   ├── alert_worker.py   # Processes weather alerts
-│   ├── alert_player.py   # Audio playback for alerts
-│   ├── check_feeds.py    # Feed health checks
-│   ├── email_utils.py    # Email notifications
-│   ├── weather_gui.py    # Tkinter GUI monitor
-│   ├── weather_rss_gui.py# RSS GUI monitor
-│   ├── weather_health.py # Service health monitoring
-│   ├── weather_rss_dashboard_alert.py # Dashboard alert integration
-│   ├── web/              # Flask web dashboard
-│   ├── weather_web/      # Additional web assets
-│   ├── grafana/          # Grafana dashboard configs
-│   ├── config/           # Configuration files
-│   ├── logs/             # Log output
-│   ├── feeds/            # Downloaded RSS/XML feed files
+├── weather_rss/                      # Core weather RSS service (Dockerized)
+│   ├── weather_service.py            # NWS FL alerts (30s) + NHC RSS (5min) → MongoDB
+│   ├── weather_rss.py                # 19 FL ASOS station obs fetcher (15min)
+│   ├── alert_worker.py               # Processes alert rules from MongoDB
+│   ├── alert_player.py               # Audio playback for alerts
+│   ├── weather_rss_service.py        # Service wrapper
+│   ├── weather_rss_dashboard.py      # Dashboard integration
+│   ├── weather_rss_dashboard_alert.py# Alert dashboard integration
+│   ├── weather_rss_gui.py            # RSS GUI monitor
+│   ├── weather_gui.py                # Tkinter GUI monitor
+│   ├── weather_health.py             # Service health monitoring
+│   ├── check_feeds.py                # Feed health checks
+│   ├── email_utils.py                # Email notifications
+│   ├── weather_rss_email.sh          # Email shell script
+│   ├── start_weather_gui.sh          # GUI launcher
+│   ├── web/                          # Flask web dashboard
+│   ├── static/                       # Static web assets
+│   ├── audio/                        # Alert audio files
+│   ├── grafana/                      # Grafana dashboard configs
+│   ├── config/                       # Configuration files
+│   ├── docs/                         # Documentation
+│   ├── logs/                         # Log output
+│   ├── feeds/                        # Downloaded RSS/XML feed files (7-day retention)
+│   ├── requirements.txt
 │   ├── docker-compose.yml
 │   └── Dockerfile
-├── mongo_tts/            # MongoDB TTS monitor app
-│   ├── app.py            # Flask app (port 5000)
-│   ├── db.py             # MongoDB interface
-│   ├── tts.py            # Text-to-speech
-│   ├── importer.py       # JSON/XML importer
-│   └── config.py
-├── scripts/              # Utility scripts
-├── chatgpt_cli.py        # ChatGPT CLI tool
-└── FM Transmitter Air Chain.py  # FM transmitter integration
+├── weather_station/                  # Standalone weather station project
+│   ├── main.py                       # Entry point
+│   ├── audio_chain.py                # Audio processing chain
+│   ├── core/                         # Core logic
+│   ├── processing/                   # Data processing
+│   ├── services/                     # Service modules
+│   ├── stations/                     # Station definitions
+│   ├── dashboard/                    # Dashboard UI
+│   ├── fm/                           # FM transmitter integration
+│   ├── audio/                        # Audio assets
+│   ├── config/                       # Configuration
+│   ├── data/                         # Data storage
+│   └── requirements.txt
+├── mongo_tts/                        # MongoDB TTS monitor app
+│   ├── app.py                        # Flask app (port 5000)
+│   ├── db.py                         # MongoDB interface
+│   ├── tts.py                        # Text-to-speech engine
+│   ├── importer.py                   # JSON/XML importer
+│   ├── desktop.py                    # Desktop integration
+│   ├── config.py                     # Configuration
+│   ├── templates/                    # Jinja2 templates
+│   ├── static/                       # Static web assets
+│   └── requirements.txt
+├── audio_playlist/                   # Organized audio library
+│   ├── alerts/                       # Alert audio (tornado, fire, flood, freeze, etc.)
+│   ├── weather/                      # Weather conditions + forecasts
+│   ├── educational/                  # Educational content
+│   ├── imaging/                      # Station IDs, jingles, sweepers
+│   ├── traffic/                      # Traffic reports
+│   ├── top_of_the_hour/              # Top-of-hour content
+│   └── generated_wav_files/          # TTS-generated audio
+├── wav_output/                       # TTS WAV output files
+├── scripts/                          # Utility scripts
+│   └── fetch_weather_rss.py
+├── chatgpt_cli.py                    # ChatGPT CLI tool
+└── FM Transmitter Air Chain.py       # FM transmitter air chain
 ```
 
 ## Key Services (Docker Compose)

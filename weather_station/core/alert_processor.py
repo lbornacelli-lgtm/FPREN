@@ -42,8 +42,8 @@ def process_alerts(mongo_service, tts_engine, file_router):
         desc      = alert["description"]
         area      = alert["area_desc"]
 
-        # Build the spoken text
-        text = f"{event}. {headline}."
+        # Build the spoken text (event title omitted — starts with headline)
+        text = f"{headline}."
         if area:
             text += f" Affected areas: {area}."
         if desc:

@@ -1,14 +1,16 @@
 import os
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from bson import ObjectId
 from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
+from pymongo import MongoClient
 
 import db
 import importer
 import tts
-from config import FLASK_DEBUG, FLASK_PORT, WAV_OUTPUT_DIR
+from config import FLASK_DEBUG, FLASK_PORT, MONGO_URI, DB_NAME, WAV_OUTPUT_DIR
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB upload limit
@@ -91,6 +93,21 @@ def serve_wav(entry_id):
 def delete_entry(entry_id):
     db.delete_entry(entry_id)
     return redirect(url_for("index") + "?msg=Deleted")
+
+
+@app.route("/feedback", methods=["POST"])
+def submit_feedback():
+    name = request.form.get("name", "").strip()
+    message = request.form.get("message", "").strip()
+    if not message:
+        return redirect(url_for("index") + "?msg=Feedback+message+is+required")
+    client = MongoClient(MONGO_URI)
+    client[DB_NAME]["feedback"].insert_one({
+        "name": name or "Anonymous",
+        "message": message,
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return redirect(url_for("index") + "?msg=Thank+you+for+your+feedback!")
 
 
 if __name__ == "__main__":

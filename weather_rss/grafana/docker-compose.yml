@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+
+  mongodb:
+    image: mongo:6
+    container_name: weather_mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+
+  rss_fetcher:
+    build: .
+    container_name: weather_rss_fetcher
+    restart: unless-stopped
+    volumes:
+      - ./feeds:/app/feeds
+    depends_on:
+      - mongodb
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+    command: python weather_service.py
+
+  alert_worker:
+    build: .
+    container_name: weather_alerts
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+    command: python alert_worker.py
+
+  web_dashboard:
+    build: ./web
+    container_name: weather_web
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+    ports:
+      - "5000:5000"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+    command: python app.py
+
+  grafana:
+    image: grafana/grafana:10.3.4
+    container_name: weather_grafana
+    user: "472"    # Grafana default user
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - mongodb
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  mongo_data:
+  grafana_data:

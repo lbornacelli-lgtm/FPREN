@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: 'Weather RSS Dashboards'
+    orgId: 1
+    folder: 'Weather RSS'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards

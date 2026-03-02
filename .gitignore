@@ -1,22 +1,43 @@
+# -----------------------------------------------
 # Python
+# -----------------------------------------------
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-venv/
 *.egg-info/
+venv/
+venv_rss/
+chatgpt_env/
 
-# Secrets / personal
+# -----------------------------------------------
+# Logs & runtime output
+# -----------------------------------------------
+*.log
+*.out
+*.save
+*.watchdog
+wav_output/
+weather_data/
+
+# -----------------------------------------------
+# Credentials & personal config
+# -----------------------------------------------
 .ssh/
 .gnupg/
+.gitconfig
 .bash_history*
 .sudo_as_admin_successful
 dead.letter
+.env
 
+# -----------------------------------------------
 # System / desktop
+# -----------------------------------------------
 .cache/
 .config/
 .local/
+.docker/
 .vnc/
 .dmrc
 .idlerc/
@@ -35,24 +56,29 @@ snap/
 Desktop/
 Downloads/
 
-# Build artifacts / packages
+# -----------------------------------------------
+# Packages & installers
+# -----------------------------------------------
 *.deb
-protonvpn*/
+*.deb.*
 
-# Runtime output
-wav_output/
-*.out
-gui.log
-weather_service.out
+# -----------------------------------------------
+# Weather RSS runtime dirs
+# -----------------------------------------------
+weather_rss/logs/
+weather_rss/run/
+weather_rss/feeds/
+weather_rss/venv_rss/
+weather_rss/weather_web/
 
-# Data / feeds
+# -----------------------------------------------
+# Data & generated feeds
+# -----------------------------------------------
 feeds/
 sample_feed.json
-weather_data/
 
-# Other projects (not yet tracked)
-chatgpt_env/
-scripts/
-etc/
-weather_station/
-audio_playlist/
+# -----------------------------------------------
+# Notes / scratch files
+# -----------------------------------------------
+"COMPLETE weather_station Structure.txt"
+COMPLETE*.txt

@@ -150,7 +150,7 @@ class IcecastStreamer:
             if fifo is None:
                 if self._ffmpeg and self._ffmpeg.poll() is None:
                     self._ffmpeg.terminate()
-                time.sleep(2)
+                time.sleep(10)  # give Icecast time to release the mount
                 continue
 
             try:
@@ -203,3 +203,7 @@ class IcecastStreamer:
             if self._ffmpeg and self._ffmpeg.poll() is None:
                 self._ffmpeg.terminate()
                 self._ffmpeg.wait(timeout=3)
+            # Give Icecast time to release the mount before reconnecting
+            if not self._stop_event.is_set():
+                logger.info("Waiting 10s for Icecast to release mount before reconnecting...")
+                time.sleep(10)

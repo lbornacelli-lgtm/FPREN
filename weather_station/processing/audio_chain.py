@@ -16,10 +16,10 @@ def apply_audio_chain(input_file: str, output_file: str):
         Gain(3.0),
         Compressor(threshold_db=-20, ratio=3.0),
         Limiter(threshold_db=-1.0),
-        HighShelfFilter(cutoff_hz=10000, gain_db=4.0),
-        LowShelfFilter(cutoff_hz=120, gain_db=3.0),
+        HighShelfFilter(cutoff_frequency_hz=10000, gain_db=4.0),
+        LowShelfFilter(cutoff_frequency_hz=120, gain_db=3.0),
         Reverb(room_size=0.3, wet_level=0.2),
-        Delay(delay_time_s=0.25, feedback=0.2, wet_level=0.15)
+        Delay(delay_seconds=0.25, feedback=0.2, mix=0.15)
     ])
 
     # Process audio

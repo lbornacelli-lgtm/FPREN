@@ -86,7 +86,7 @@ class FileRouter:
             self.logger.warning(f"No folder for category '{category}'")
             return None
 
-        files = [f for f in os.listdir(folder) if f.lower().endswith(".wav")]
+        files = [f for f in os.listdir(folder) if f.lower().endswith(".wav") and "_processed" not in f]
         if not files:
             self.logger.warning(f"No WAV files in '{folder}'")
             return None

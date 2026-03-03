@@ -91,7 +91,6 @@ def main():
             new_state = get_interface_state(iface)
             if new_state != states[iface]:
                 logger.warning(f"{iface} ({label}): {states[iface]} → {new_state}")
-                send_alert(iface, label, states[iface], new_state)
                 states[iface] = new_state
 
 

@@ -4,6 +4,11 @@ from tkinter import ttk, messagebox
 import subprocess
 import threading
 import time
+import urllib.request
+import urllib.error
+import base64
+import json
+import xml.etree.ElementTree as ET
 from pymongo import MongoClient
 from datetime import datetime, timezone
 
@@ -14,6 +19,15 @@ MONGO_URI = "mongodb://localhost:27017/"
 DB_NAME = "weather_rss"
 SERVICE_NAME = "weather-rss.service"
 REFRESH_INTERVAL = 5  # seconds
+
+# -------------------------------
+# ICECAST CONFIGURATION
+# -------------------------------
+ICECAST_HOST       = "localhost"
+ICECAST_PORT       = 8000
+ICECAST_MOUNT      = "/beacon"
+ICECAST_ADMIN_USER = "admin"
+ICECAST_ADMIN_PASS = "1002LBorn1!"
 
 # -------------------------------
 # MONGODB CONNECTION
@@ -55,8 +69,10 @@ class SystemdMonitor(tk.Tk):
         tab_control = ttk.Notebook(self)
         self.tab_rss = ttk.Frame(tab_control)
         self.tab_nws = ttk.Frame(tab_control)
+        self.tab_icecast = ttk.Frame(tab_control)
         tab_control.add(self.tab_rss, text="RSS Feeds")
         tab_control.add(self.tab_nws, text="NWS Alerts")
+        tab_control.add(self.tab_icecast, text="Icecast Listeners")
         tab_control.pack(expand=1, fill="both")
 
         # RSS Treeview
@@ -70,6 +86,23 @@ class SystemdMonitor(tk.Tk):
         for col in self.nws_tree["columns"]:
             self.nws_tree.heading(col, text=col.replace("_", " ").title())
         self.nws_tree.pack(expand=1, fill="both")
+
+        # Icecast Listeners tab
+        self.icecast_summary_var = tk.StringVar(value="Mount: /beacon  |  Listeners: —  |  Stream started: —")
+        ttk.Label(self.tab_icecast, textvariable=self.icecast_summary_var,
+                  font=("Arial", 11)).pack(pady=8)
+        self.icecast_tree = ttk.Treeview(
+            self.tab_icecast,
+            columns=("ip", "connected", "user_agent"),
+            show="headings",
+        )
+        self.icecast_tree.heading("ip",         text="IP Address")
+        self.icecast_tree.heading("connected",  text="Connected")
+        self.icecast_tree.heading("user_agent", text="User Agent")
+        self.icecast_tree.column("ip",         width=160, anchor="w")
+        self.icecast_tree.column("connected",  width=120, anchor="center")
+        self.icecast_tree.column("user_agent", width=500, anchor="w")
+        self.icecast_tree.pack(expand=1, fill="both")
 
     def refresh_status(self):
         # Update systemd service status
@@ -108,6 +141,65 @@ class SystemdMonitor(tk.Tk):
                 alert.get("headline"),
                 fetched_at
             ))
+
+        # Update Icecast listeners table
+        self._refresh_icecast()
+
+    def _refresh_icecast(self):
+        """Fetch listener data from the Icecast admin API and update the tab."""
+        url = (
+            f"http://{ICECAST_HOST}:{ICECAST_PORT}"
+            f"/admin/listclients?mount={ICECAST_MOUNT}"
+        )
+        credentials = base64.b64encode(
+            f"{ICECAST_ADMIN_USER}:{ICECAST_ADMIN_PASS}".encode()
+        ).decode()
+        req = urllib.request.Request(url, headers={"Authorization": f"Basic {credentials}"})
+
+        try:
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                xml_data = resp.read()
+        except Exception as exc:
+            self.icecast_summary_var.set(f"Mount: {ICECAST_MOUNT}  |  Icecast unreachable: {exc}")
+            for row in self.icecast_tree.get_children():
+                self.icecast_tree.delete(row)
+            return
+
+        try:
+            root = ET.fromstring(xml_data)
+        except ET.ParseError as exc:
+            self.icecast_summary_var.set(f"Mount: {ICECAST_MOUNT}  |  XML parse error: {exc}")
+            return
+
+        source = root.find("source")
+        if source is None:
+            self.icecast_summary_var.set(
+                f"Mount: {ICECAST_MOUNT}  |  Listeners: 0  |  Stream: offline"
+            )
+            for row in self.icecast_tree.get_children():
+                self.icecast_tree.delete(row)
+            return
+
+        listener_count = source.findtext("Listeners", "0")
+        stream_start   = source.findtext("StreamStart", "—")
+        self.icecast_summary_var.set(
+            f"Mount: {ICECAST_MOUNT}  |  Listeners: {listener_count}  |  Stream started: {stream_start}"
+        )
+
+        for row in self.icecast_tree.get_children():
+            self.icecast_tree.delete(row)
+
+        for listener in source.findall("listener"):
+            ip        = listener.findtext("IP", "—")
+            connected = listener.findtext("Connected", "—")
+            agent     = listener.findtext("UserAgent", "—")
+            # Format connected seconds as h:mm:ss
+            try:
+                secs = int(connected)
+                connected = f"{secs // 3600}:{(secs % 3600) // 60:02d}:{secs % 60:02d}"
+            except (ValueError, TypeError):
+                pass
+            self.icecast_tree.insert("", "end", values=(ip, connected, agent))
 
     def auto_refresh(self):
         self.refresh_status()

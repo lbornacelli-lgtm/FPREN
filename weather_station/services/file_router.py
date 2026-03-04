@@ -70,14 +70,23 @@ class FileRouter:
         self.logger = logging.getLogger("FileRouter")
         self.settings = settings
 
+        audio = settings.AUDIO_PATH
         self.audio_dirs = {
-            "top_of_hour":       os.path.join(PLAYLIST_ROOT, "top_of_the_hour"),
-            "educational":       os.path.join(PLAYLIST_ROOT, "educational"),
-            "imaging":           os.path.join(PLAYLIST_ROOT, "imaging"),
-            "alerts":            os.path.join(settings.AUDIO_PATH, "alerts"),
-            "traffic":           os.path.join(PLAYLIST_ROOT, "traffic"),
-            "weather":           os.path.join(PLAYLIST_ROOT, "weather"),
-            "generated_wav_files": os.path.join(PLAYLIST_ROOT, "generated_wav_files"),
+            # Station audio library (files live here)
+            "top_of_hour":         os.path.join(audio, "top_of_hour"),
+            "educational":         os.path.join(audio, "educational"),
+            "imaging":             os.path.join(audio, "imaging"),
+            "alerts":              os.path.join(audio, "alerts"),
+            "traffic":             os.path.join(audio, "traffic"),
+            "weather":             os.path.join(audio, "weather"),
+            "generated_wav_files": os.path.join(audio, "generated_wav_files"),
+            # Shared broadcast library (populated separately)
+            "pl_top_of_hour":         os.path.join(PLAYLIST_ROOT, "top_of_the_hour"),
+            "pl_educational":         os.path.join(PLAYLIST_ROOT, "educational"),
+            "pl_imaging":             os.path.join(PLAYLIST_ROOT, "imaging"),
+            "pl_traffic":             os.path.join(PLAYLIST_ROOT, "traffic"),
+            "pl_weather":             os.path.join(PLAYLIST_ROOT, "weather"),
+            "pl_generated_wav_files": os.path.join(PLAYLIST_ROOT, "generated_wav_files"),
         }
         self.logger.info("FileRouter initialized")
 

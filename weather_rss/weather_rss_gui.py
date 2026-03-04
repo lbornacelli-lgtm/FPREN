@@ -348,17 +348,20 @@ class SystemdMonitor(tk.Tk):
 
     def _restart_stream(self):
         if not messagebox.askyesno("Restart Stream",
-                                   "Restart the DarkIce stream?\nThis will briefly disconnect listeners."):
+                                   "Kill the Icecast source on /beacon?\nThis will briefly disconnect listeners."):
             return
+        url = (
+            f"http://{ICECAST_HOST}:{ICECAST_PORT}"
+            f"/admin/killsource?mount={ICECAST_MOUNT}"
+        )
+        credentials = base64.b64encode(
+            f"{ICECAST_ADMIN_USER}:{ICECAST_ADMIN_PASS}".encode()
+        ).decode()
+        req = urllib.request.Request(url, headers={"Authorization": f"Basic {credentials}"})
         try:
-            result = subprocess.run(
-                ["sudo", "systemctl", "restart", "darkice.service"],
-                capture_output=True, text=True, timeout=15,
-            )
-            if result.returncode == 0:
-                messagebox.showinfo("Stream Restarted", "DarkIce restarted successfully.")
-            else:
-                messagebox.showerror("Error", f"Restart failed:\n{result.stderr.strip()}")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                resp.read()
+            messagebox.showinfo("Stream Restarted", "Source killed — DarkIce will reconnect automatically.")
         except Exception as e:
             messagebox.showerror("Error", f"Could not restart stream:\n{e}")
 

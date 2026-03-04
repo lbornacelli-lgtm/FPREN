@@ -55,6 +55,9 @@ ALERT_FOLDER_MAP = {
 # Root of the broadcast-facing audio library
 ALERT_AUDIO_ROOT = "/home/lh_admin/weather_station/audio/alerts"
 
+# Shared audio playlist library (all non-alert content)
+PLAYLIST_ROOT = "/home/lh_admin/audio_playlist"
+
 # Subfolders checked in priority order for playback
 ALERT_PRIORITY_ORDER = [
     "priority_1", "tornado", "thunderstorm", "hurricane",
@@ -68,10 +71,13 @@ class FileRouter:
         self.settings = settings
 
         self.audio_dirs = {
-            "top_of_hour": os.path.join(settings.AUDIO_PATH, "top_of_hour"),
-            "educational": os.path.join(settings.AUDIO_PATH, "educational"),
-            "imaging": os.path.join(settings.AUDIO_PATH, "imaging"),
-            "alerts": os.path.join(settings.AUDIO_PATH, "alerts"),
+            "top_of_hour":       os.path.join(PLAYLIST_ROOT, "top_of_the_hour"),
+            "educational":       os.path.join(PLAYLIST_ROOT, "educational"),
+            "imaging":           os.path.join(PLAYLIST_ROOT, "imaging"),
+            "alerts":            os.path.join(settings.AUDIO_PATH, "alerts"),
+            "traffic":           os.path.join(PLAYLIST_ROOT, "traffic"),
+            "weather":           os.path.join(PLAYLIST_ROOT, "weather"),
+            "generated_wav_files": os.path.join(PLAYLIST_ROOT, "generated_wav_files"),
         }
         self.logger.info("FileRouter initialized")
 

@@ -34,8 +34,11 @@ ICECAST_ADMIN_PASS = "1002LBorn1!"
 # -------------------------------
 mongo = MongoClient(MONGO_URI)
 db = mongo[DB_NAME]
-rss_status_col = db.feed_status
-nws_alerts_col = db.nws_alerts
+rss_status_col      = db.feed_status
+nws_alerts_col      = db.nws_alerts
+airport_metar_col   = db.airport_metar
+fl_traffic_col      = db.fl_traffic
+school_closings_col = db.school_closings
 
 # -------------------------------
 # GUI APPLICATION
@@ -43,8 +46,8 @@ nws_alerts_col = db.nws_alerts
 class SystemdMonitor(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Weather RSS Service Monitor")
-        self.geometry("900x600")
+        self.title("Beacon Alerts Monitor")
+        self.geometry("1100x650")
 
         self.status_var = tk.StringVar(value="Unknown")
 
@@ -54,7 +57,7 @@ class SystemdMonitor(tk.Tk):
 
     def create_widgets(self):
         # Header
-        header = ttk.Label(self, text="Weather RSS & NWS Alerts Monitor",
+        header = ttk.Label(self, text="Beacon Alerts Monitor",
                            font=("Arial", 16, "bold"))
         header.pack(pady=10)
 
@@ -67,30 +70,111 @@ class SystemdMonitor(tk.Tk):
 
         # Tabs
         tab_control = ttk.Notebook(self)
-        self.tab_rss = ttk.Frame(tab_control)
-        self.tab_nws = ttk.Frame(tab_control)
-        self.tab_icecast = ttk.Frame(tab_control)
-        tab_control.add(self.tab_rss, text="RSS Feeds")
-        tab_control.add(self.tab_nws, text="NWS Alerts")
+        self.tab_rss          = ttk.Frame(tab_control)
+        self.tab_nws          = ttk.Frame(tab_control)
+        self.tab_traffic      = ttk.Frame(tab_control)
+        self.tab_school       = ttk.Frame(tab_control)
+        self.tab_airport      = ttk.Frame(tab_control)
+        self.tab_icecast      = ttk.Frame(tab_control)
+        tab_control.add(self.tab_rss,     text="RSS Feeds")
+        tab_control.add(self.tab_nws,     text="NWS Alerts")
+        tab_control.add(self.tab_traffic, text="Traffic")
+        tab_control.add(self.tab_school,  text="School Closings")
+        tab_control.add(self.tab_airport, text="Airport Weather")
         tab_control.add(self.tab_icecast, text="Icecast Listeners")
         tab_control.pack(expand=1, fill="both")
 
-        # RSS Treeview
-        self.rss_tree = ttk.Treeview(self.tab_rss, columns=("filename", "status", "last_fetch", "size_kb"), show="headings")
+        # --- RSS Treeview ---
+        self.rss_tree = ttk.Treeview(
+            self.tab_rss,
+            columns=("filename", "status", "last_fetch", "size_kb"),
+            show="headings",
+        )
         for col in self.rss_tree["columns"]:
             self.rss_tree.heading(col, text=col.title())
         self.rss_tree.pack(expand=1, fill="both")
 
-        # NWS Treeview
-        self.nws_tree = ttk.Treeview(self.tab_nws, columns=("event", "severity", "area", "headline", "fetched_at"), show="headings")
+        # --- NWS Alerts Treeview ---
+        self.nws_tree = ttk.Treeview(
+            self.tab_nws,
+            columns=("event", "severity", "area", "headline", "fetched_at"),
+            show="headings",
+        )
         for col in self.nws_tree["columns"]:
             self.nws_tree.heading(col, text=col.replace("_", " ").title())
         self.nws_tree.pack(expand=1, fill="both")
 
-        # Icecast Listeners tab
-        self.icecast_summary_var = tk.StringVar(value="Mount: /beacon  |  Listeners: —  |  Stream started: —")
-        ttk.Label(self.tab_icecast, textvariable=self.icecast_summary_var,
-                  font=("Arial", 11)).pack(pady=8)
+        # --- Traffic Treeview ---
+        self.traffic_tree = ttk.Treeview(
+            self.tab_traffic,
+            columns=("type", "road", "location", "county", "severity", "last_updated"),
+            show="headings",
+        )
+        col_widths = {"type": 160, "road": 200, "location": 220, "county": 100, "severity": 80, "last_updated": 140}
+        for col in self.traffic_tree["columns"]:
+            self.traffic_tree.heading(col, text=col.replace("_", " ").title())
+            self.traffic_tree.column(col, width=col_widths.get(col, 120), anchor="w")
+        traffic_scroll = ttk.Scrollbar(self.tab_traffic, orient="vertical", command=self.traffic_tree.yview)
+        self.traffic_tree.configure(yscrollcommand=traffic_scroll.set)
+        self.traffic_tree.pack(side="left", expand=1, fill="both")
+        traffic_scroll.pack(side="right", fill="y")
+
+        # --- School Closings Treeview ---
+        self.school_tree = ttk.Treeview(
+            self.tab_school,
+            columns=("title", "closure_type", "published_date", "fetched_at"),
+            show="headings",
+        )
+        school_col_widths = {"title": 400, "closure_type": 120, "published_date": 180, "fetched_at": 180}
+        for col in self.school_tree["columns"]:
+            self.school_tree.heading(col, text=col.replace("_", " ").title())
+            self.school_tree.column(col, width=school_col_widths.get(col, 150), anchor="w")
+        self.school_no_data = ttk.Label(self.tab_school, text="No active school closings or delays.",
+                                         font=("Arial", 11), foreground="gray")
+        self.school_tree.pack(expand=1, fill="both")
+
+        # --- Airport Weather Treeview ---
+        self.airport_tree = ttk.Treeview(
+            self.tab_airport,
+            columns=("icaoId", "name", "fltCat", "temp", "dewp", "wdir", "wspd", "visib", "obsTime"),
+            show="headings",
+        )
+        airport_col_cfg = {
+            "icaoId":  ("ICAO",       60),
+            "name":    ("Airport",   260),
+            "fltCat":  ("Cat",        50),
+            "temp":    ("Temp °C",    70),
+            "dewp":    ("Dewp °C",    70),
+            "wdir":    ("Wdir",       60),
+            "wspd":    ("Wspd kt",    65),
+            "visib":   ("Vis",        55),
+            "obsTime": ("Obs Time",  160),
+        }
+        for col, (label, width) in airport_col_cfg.items():
+            self.airport_tree.heading(col, text=label)
+            self.airport_tree.column(col, width=width, anchor="center")
+        airport_scroll = ttk.Scrollbar(self.tab_airport, orient="vertical", command=self.airport_tree.yview)
+        self.airport_tree.configure(yscrollcommand=airport_scroll.set)
+        self.airport_tree.pack(side="left", expand=1, fill="both")
+        airport_scroll.pack(side="right", fill="y")
+
+        # --- Icecast Listeners tab ---
+        icecast_top = ttk.Frame(self.tab_icecast)
+        icecast_top.pack(fill="x", padx=8, pady=6)
+
+        self.icecast_summary_var = tk.StringVar(
+            value="Mount: /beacon  |  Listeners: —  |  Stream started: —"
+        )
+        ttk.Label(icecast_top, textvariable=self.icecast_summary_var,
+                  font=("Arial", 11)).pack(side="left")
+
+        restart_btn = ttk.Button(
+            icecast_top,
+            text="Restart Stream",
+            command=self._restart_stream,
+        )
+        restart_btn.pack(side="right", padx=6)
+
         self.icecast_tree = ttk.Treeview(
             self.tab_icecast,
             columns=("ip", "connected", "user_agent"),
@@ -104,8 +188,10 @@ class SystemdMonitor(tk.Tk):
         self.icecast_tree.column("user_agent", width=500, anchor="w")
         self.icecast_tree.pack(expand=1, fill="both")
 
+    # ------------------------------------------------------------------
+    # REFRESH METHODS
+    # ------------------------------------------------------------------
     def refresh_status(self):
-        # Update systemd service status
         try:
             result = subprocess.run(["systemctl", "is-active", SERVICE_NAME],
                                     capture_output=True, text=True)
@@ -113,7 +199,14 @@ class SystemdMonitor(tk.Tk):
         except Exception as e:
             self.status_var.set(f"Error: {e}")
 
-        # Update RSS feed table
+        self._refresh_rss()
+        self._refresh_nws()
+        self._refresh_traffic()
+        self._refresh_school()
+        self._refresh_airport()
+        self._refresh_icecast()
+
+    def _refresh_rss(self):
         for row in self.rss_tree.get_children():
             self.rss_tree.delete(row)
         for doc in rss_status_col.find():
@@ -124,10 +217,10 @@ class SystemdMonitor(tk.Tk):
                 doc.get("filename"),
                 doc.get("status"),
                 last_fetch,
-                round(doc.get("file_size_bytes", 0)/1024, 2)
+                round(doc.get("file_size_bytes", 0) / 1024, 2),
             ))
 
-        # Update NWS alerts table
+    def _refresh_nws(self):
         for row in self.nws_tree.get_children():
             self.nws_tree.delete(row)
         for alert in nws_alerts_col.find().sort("fetched_at", -1):
@@ -139,14 +232,66 @@ class SystemdMonitor(tk.Tk):
                 alert.get("severity"),
                 alert.get("area_desc"),
                 alert.get("headline"),
-                fetched_at
+                fetched_at,
             ))
 
-        # Update Icecast listeners table
-        self._refresh_icecast()
+    def _refresh_traffic(self):
+        for row in self.traffic_tree.get_children():
+            self.traffic_tree.delete(row)
+        for inc in fl_traffic_col.find().sort("severity", 1):
+            self.traffic_tree.insert("", "end", values=(
+                inc.get("type", ""),
+                inc.get("road", ""),
+                inc.get("location", ""),
+                inc.get("county", ""),
+                inc.get("severity", ""),
+                inc.get("last_updated", ""),
+            ))
+
+    def _refresh_school(self):
+        for row in self.school_tree.get_children():
+            self.school_tree.delete(row)
+        docs = list(school_closings_col.find().sort("fetched_at", -1))
+        for doc in docs:
+            fetched_at = doc.get("fetched_at")
+            if fetched_at and hasattr(fetched_at, "strftime"):
+                fetched_at = fetched_at.strftime("%Y-%m-%d %H:%M UTC")
+            self.school_tree.insert("", "end", values=(
+                doc.get("title", ""),
+                doc.get("closure_type", ""),
+                doc.get("published_date", ""),
+                fetched_at,
+            ))
+        if not docs:
+            self.school_no_data.place(relx=0.5, rely=0.5, anchor="center")
+        else:
+            self.school_no_data.place_forget()
+
+    def _refresh_airport(self):
+        for row in self.airport_tree.get_children():
+            self.airport_tree.delete(row)
+        # Color-code by flight category
+        flt_colors = {"LIFR": "#ff6666", "IFR": "#ffaa44", "MVFR": "#6699ff", "VFR": "#44bb44"}
+        for rec in airport_metar_col.find().sort("icaoId", 1):
+            flt_cat = rec.get("fltCat", "")
+            obs_time = rec.get("obsTime", "")
+            iid = self.airport_tree.insert("", "end", values=(
+                rec.get("icaoId", ""),
+                rec.get("name", ""),
+                flt_cat,
+                rec.get("temp", ""),
+                rec.get("dewp", ""),
+                rec.get("wdir", ""),
+                rec.get("wspd", ""),
+                rec.get("visib", ""),
+                obs_time,
+            ))
+            color = flt_colors.get(flt_cat)
+            if color:
+                self.airport_tree.tag_configure(flt_cat, foreground=color)
+                self.airport_tree.item(iid, tags=(flt_cat,))
 
     def _refresh_icecast(self):
-        """Fetch listener data from the Icecast admin API and update the tab."""
         url = (
             f"http://{ICECAST_HOST}:{ICECAST_PORT}"
             f"/admin/listclients?mount={ICECAST_MOUNT}"
@@ -160,7 +305,9 @@ class SystemdMonitor(tk.Tk):
             with urllib.request.urlopen(req, timeout=3) as resp:
                 xml_data = resp.read()
         except Exception as exc:
-            self.icecast_summary_var.set(f"Mount: {ICECAST_MOUNT}  |  Icecast unreachable: {exc}")
+            self.icecast_summary_var.set(
+                f"Mount: {ICECAST_MOUNT}  |  Icecast unreachable: {exc}"
+            )
             for row in self.icecast_tree.get_children():
                 self.icecast_tree.delete(row)
             return
@@ -188,18 +335,32 @@ class SystemdMonitor(tk.Tk):
 
         for row in self.icecast_tree.get_children():
             self.icecast_tree.delete(row)
-
         for listener in source.findall("listener"):
             ip        = listener.findtext("IP", "—")
             connected = listener.findtext("Connected", "—")
             agent     = listener.findtext("UserAgent", "—")
-            # Format connected seconds as h:mm:ss
             try:
                 secs = int(connected)
                 connected = f"{secs // 3600}:{(secs % 3600) // 60:02d}:{secs % 60:02d}"
             except (ValueError, TypeError):
                 pass
             self.icecast_tree.insert("", "end", values=(ip, connected, agent))
+
+    def _restart_stream(self):
+        if not messagebox.askyesno("Restart Stream",
+                                   "Restart the DarkIce stream?\nThis will briefly disconnect listeners."):
+            return
+        try:
+            result = subprocess.run(
+                ["sudo", "systemctl", "restart", "darkice.service"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0:
+                messagebox.showinfo("Stream Restarted", "DarkIce restarted successfully.")
+            else:
+                messagebox.showerror("Error", f"Restart failed:\n{result.stderr.strip()}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not restart stream:\n{e}")
 
     def auto_refresh(self):
         self.refresh_status()

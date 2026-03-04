@@ -82,6 +82,7 @@ class SystemdMonitor(tk.Tk):
         tab_control.add(self.tab_school,  text="School Closings")
         tab_control.add(self.tab_airport, text="Airport Weather")
         tab_control.add(self.tab_icecast, text="Icecast Listeners")
+        self.tab_control = tab_control
         tab_control.pack(expand=1, fill="both")
 
         # --- RSS Treeview ---

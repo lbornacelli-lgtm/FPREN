@@ -1,0 +1,17 @@
+{
+  "name": "Standard Rotation",
+  "description": "Default all-Florida hourly rotation",
+  "slots": [
+    {"category": "top_of_hour",        "label": "Top of Hour ID",   "top_of_hour": true},
+    {"category": "priority_1",         "label": "Priority Alert",   "skip_if_empty": true},
+    {"category": "educational",        "label": "Educational"},
+    {"category": "airport_weather",    "label": "Airport Weather"},
+    {"category": "weather",            "label": "Weather Report"},
+    {"category": "educational",        "label": "Educational"},
+    {"category": "airport_weather",    "label": "Airport Weather"},
+    {"category": "traffic",            "label": "Traffic"},
+    {"category": "educational",        "label": "Educational"},
+    {"category": "airport_weather",    "label": "Airport Weather"},
+    {"category": "generated_wav_files","label": "Station Content"}
+  ]
+}

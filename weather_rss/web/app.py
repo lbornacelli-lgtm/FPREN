@@ -123,6 +123,7 @@ HTML_TEMPLATE = """
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="refresh" content="60">
+<link rel="icon" type="image/png" href="/static/fpren.png">
 <title>Beacon Alerts Dashboard</title>
 <style>
   body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; }

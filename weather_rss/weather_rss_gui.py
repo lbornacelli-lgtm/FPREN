@@ -80,7 +80,7 @@ school_closings_col = db.school_closings
 class SystemdMonitor(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Beacon Alerts Monitor")
+        self.title("FPREN Alerts Monitor")
         self.geometry("1100x650")
 
         self.status_var = tk.StringVar(value="Unknown")
@@ -118,7 +118,7 @@ class SystemdMonitor(tk.Tk):
 
         title_frame = tk.Frame(header_frame, background="#111111")
         title_frame.pack(side="left", pady=6)
-        tk.Label(title_frame, text="Beacon Alerts Monitor",
+        tk.Label(title_frame, text="FPREN Alerts Monitor",
                  font=("Arial", 15, "bold"),
                  foreground="#ffffff", background="#111111").pack(anchor="w")
         tk.Label(title_frame, text="Weather  \u2022  Traffic  \u2022  Alerts  \u2022  Icecast",
@@ -876,11 +876,11 @@ class SystemdMonitor(tk.Tk):
         def _send():
             try:
                 msg = EmailMessage()
-                msg["Subject"] = "Beacon Alerts Monitor — SMTP Test"
+                msg["Subject"] = "FPREN Alerts Monitor — SMTP Test"
                 msg["From"]    = mail_from
                 msg["To"]      = mail_to
                 msg.set_content(
-                    "This is a test email from the Beacon Alerts Monitor.\n"
+                    "This is a test email from the FPREN Alerts Monitor.\n"
                     "If you received this, your SMTP settings are working correctly."
                 )
                 with smtplib.SMTP(host, port, timeout=10) as smtp:

@@ -197,10 +197,8 @@ def _build_nws_text(doc: dict) -> str:
     is_p1_event = event.lower() in PRIORITY_1_EVENTS
     is_severe   = severity.lower() in PRIORITY_1_SEVERITIES
 
-    if is_p1_event:
-        prefix = "Emergency Alert."
-    elif is_severe:
-        prefix = "Severe Weather Alert."
+    if is_p1_event or is_severe:
+        prefix = "This is a priority alert."
     else:
         prefix = ""
 
@@ -221,8 +219,10 @@ def _build_traffic_text(doc: dict) -> str:
     direction = (doc.get("direction") or "").strip()
     lane_desc = (doc.get("lane_description") or "").strip()
     full_cls  = doc.get("is_full_closure", False)
+    severity  = (doc.get("severity") or "").strip().lower()
 
-    parts = ["Traffic Alert."]
+    opener = "This is a priority alert." if severity in PRIORITY_1_SEVERITIES else "Traffic Alert."
+    parts = [opener]
 
     if inc_type:
         parts.append(inc_type)

@@ -124,7 +124,7 @@ HTML_TEMPLATE = """
 <meta charset="UTF-8">
 <meta http-equiv="refresh" content="60">
 <link rel="icon" type="image/png" href="/static/fpren.png">
-<title>Beacon Alerts Dashboard</title>
+<title>FPREN Alerts Dashboard</title>
 <style>
   body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; }
 
@@ -282,9 +282,9 @@ HTML_TEMPLATE = """
 
 <!-- Header with logo -->
 <header class="site-header">
-  <img src="/static/fpren.png" alt="Beacon Logo">
+  <img src="/static/fpren.png" alt="FPREN Logo">
   <div>
-    <div class="site-header-title">Beacon Alerts Dashboard</div>
+    <div class="site-header-title">FPREN Alerts Dashboard</div>
     <div class="site-header-sub">Weather &bull; Traffic &bull; Alerts &bull; Icecast</div>
   </div>
 </header>
@@ -945,11 +945,11 @@ def api_smtp_test():
 
     try:
         msg = EmailMessage()
-        msg["Subject"] = "Beacon Dashboard — SMTP Test"
+        msg["Subject"] = "FPREN Dashboard — SMTP Test"
         msg["From"]    = mail_from
         msg["To"]      = mail_to
         msg.set_content(
-            "This is a test email from the Beacon Alerts Dashboard.\n"
+            "This is a test email from the FPREN Alerts Dashboard.\n"
             "If you received this, your SMTP settings are working correctly."
         )
         with smtplib.SMTP(host, port, timeout=10) as smtp:

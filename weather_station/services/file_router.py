@@ -95,7 +95,7 @@ class FileRouter:
         audio = settings.AUDIO_PATH
         self.audio_dirs = {
             # Station audio library (files live here)
-            "top_of_hour":         os.path.join(audio, "top_of_hour"),
+            "top_of_hour":         os.path.join(audio, "top_of_hour", "Normal Playlist Top of the Hour"),
             "educational":         os.path.join(audio, "educational"),
             "imaging":             os.path.join(audio, "imaging"),
             "alerts":              os.path.join(audio, "alerts"),

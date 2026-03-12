@@ -102,6 +102,10 @@ ALERT_FOLDER_MAP = {
 # NWS severity levels that always escalate to priority_1 regardless of event type
 PRIORITY_1_SEVERITIES = {"extreme", "severe"}
 
+# FL511 traffic severity levels that route to priority_1
+# (FL511 uses: Minor, Intermediate, Major — "Major" maps to priority)
+TRAFFIC_PRIORITY_SEVERITIES = {"major"}
+
 PRIORITY_1_EVENTS = {"tornado emergency", "flash flood emergency"}
 
 # ---------------------------------------------------------------------------
@@ -243,7 +247,7 @@ def _build_traffic_text(doc: dict) -> str:
     full_cls  = doc.get("is_full_closure", False)
     severity  = (doc.get("severity") or "").strip().lower()
 
-    opener = "This is a priority alert." if severity in PRIORITY_1_SEVERITIES else "Traffic Alert."
+    opener = "This is a priority alert." if severity.lower() in TRAFFIC_PRIORITY_SEVERITIES else "Traffic Alert."
     parts = [opener]
 
     if inc_type:
@@ -501,7 +505,7 @@ def process_traffic(voice: PiperVoice, db, zones: list):
                     upsert=True,
                 )
                 logger.info("Traffic WAV [%s/traffic] %s", zone_id, fname)
-                if severity.lower() in PRIORITY_1_SEVERITIES:
+                if severity.lower() in TRAFFIC_PRIORITY_SEVERITIES:
                     _copy_to_priority1(wav_path, zone_id, fname)
             except Exception as exc:
                 logger.error("Failed traffic WAV %s/traffic/%s: %s", zone_id, fname, exc)

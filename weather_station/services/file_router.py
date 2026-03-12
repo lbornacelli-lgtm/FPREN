@@ -98,6 +98,7 @@ class FileRouter:
             "top_of_hour":         os.path.join(audio, "top_of_hour", "Normal Playlist Top of the Hour"),
             "educational":         os.path.join(audio, "educational"),
             "imaging":             os.path.join(audio, "imaging"),
+            "sweepers":            os.path.join(audio, "imaging", "sweepers"),
             "alerts":              os.path.join(audio, "alerts"),
             "traffic":             os.path.join(audio, "traffic"),
             "weather":             os.path.join(ZONES_ROOT, "all_florida", "weather"),

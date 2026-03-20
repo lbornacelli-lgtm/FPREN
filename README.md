@@ -1,6 +1,6 @@
-# Beacon
+# FPREN
 
-A **24-hour Weather Station broadcast system** for Gainesville, FL and surrounding areas. Beacon ingests real-time NOAA/NWS weather data, stores it in MongoDB, converts it to speech via TTS, and transmits over an FM radio transmitter — providing continuous automated weather and emergency alert broadcasting.
+A **24-hour Weather Station broadcast system** for Gainesville, FL and surrounding areas. Florida Public Radio Emergency Network ingests real-time NOAA/NWS weather data, stores it in MongoDB, converts it to speech via TTS, and transmits over an FM radio transmitter — providing continuous automated weather and emergency alert broadcasting.
 
 > Research and development platform for automated emergency weather broadcasting.
 

@@ -89,3 +89,5 @@ etc/
 "COMPLETE weather_station Structure.txt"
 COMPLETE*.txt
 weather_station/audio/generated_wav_files
+weather_station/voices/*.onnx
+weather_station/voices/*.onnx.json

@@ -1,0 +1,16 @@
+[Unit]
+Description=Beacon Airport Delays Fetcher — FAA delays + ElevenLabs TTS
+After=network.target mongod.service
+Wants=mongod.service
+
+[Service]
+Type=simple
+User=ufuser
+WorkingDirectory=/home/ufuser/Fpren-main/weather_rss
+ExecStart=/home/ufuser/Fpren-main/venv/bin/python3 airport_delays_fetcher.py
+Restart=on-failure
+RestartSec=30
+EnvironmentFile=/home/ufuser/Fpren-main/weather_station/.env
+
+[Install]
+WantedBy=multi-user.target

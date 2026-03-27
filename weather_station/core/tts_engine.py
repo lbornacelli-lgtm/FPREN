@@ -1,18 +1,30 @@
-# services/tts_engine.py
+"""
+tts_engine.py
+
+Thin backward-compatible wrapper around TTSService.
+Existing code that imports TTSEngine continues to work unchanged.
+All actual TTS logic lives in tts_service.py.
+"""
+
 import logging
-import pyttsx3
+from weather_station.core.tts_service import TTSService
 
-class TTSEngine:
+logger = logging.getLogger(__name__)
+
+
+class TTSEngine(TTSService):
+    """Backward-compatible alias for TTSService.
+
+    Prefer importing TTSService directly in new code.
+    """
+
     def __init__(self, settings):
+        super().__init__()
         self.settings = settings
-        self.engine = pyttsx3.init()
-        logging.info("TTSEngine initialized.")
+        logger.info("TTSEngine ready (via TTSService → LiteLLM → ElevenLabs).")
 
-    def text_to_wav(self, text, output_path):
-        """Generate a WAV file from text."""
-        try:
-            logging.info(f"Generating TTS WAV: {output_path}")
-            self.engine.save_to_file(text, output_path)
-            self.engine.runAndWait()
-        except Exception as e:
-            logging.error(f"TTS generation failed: {e}")
+    def text_to_wav(self, text: str, output_path: str) -> str | None:
+        """Legacy method name — delegates to say()."""
+        # Note: output is now MP3 despite the method name.
+        # Rename output_path extension if needed by callers.
+        return self.say(text, output_file=output_path)

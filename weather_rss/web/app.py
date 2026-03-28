@@ -21,7 +21,7 @@ AVAILABLE_ZONES = [
 ]
 
 STREAMS = [
-    {"id": "stream_8000", "label": "All Florida",     "port": 8000, "mount": "/beacon",          "zone": "all_florida"},
+    {"id": "stream_8000", "label": "All Florida",     "port": 8000, "mount": "/fpren",           "zone": "all_florida"},
     {"id": "stream_8001", "label": "North Florida",   "port": 8001, "mount": "/north-florida",   "zone": "north_florida"},
     {"id": "stream_8002", "label": "Central Florida", "port": 8002, "mount": "/central-florida", "zone": "central_florida"},
     {"id": "stream_8003", "label": "South Florida",   "port": 8003, "mount": "/south-florida",   "zone": "south_florida"},
@@ -101,7 +101,7 @@ def _check_stream_8000_live() -> bool:
     try:
         req = _ureq.Request(f"http://localhost:{s['port']}/admin/stats")
         req.add_header("Authorization",
-                       "Basic " + base64.b64encode(b"admin:1002LBorn1!").decode())
+                       "Basic " + base64.b64encode(b"admin:hackme").decode())
         with _ureq.urlopen(req, timeout=5) as resp:
             tree = ET.fromstring(resp.read())
         for src in tree.findall(".//source"):
@@ -1159,7 +1159,7 @@ def api_icecast():
             url = f"http://localhost:{s['port']}/admin/stats"
             req = _ureq.Request(url)
             import base64
-            creds = base64.b64encode(b"admin:1002LBorn1!").decode()
+            creds = base64.b64encode(b"admin:hackme").decode()
             req.add_header("Authorization", f"Basic {creds}")
             with _ureq.urlopen(req, timeout=3) as resp:
                 tree = ET.fromstring(resp.read())

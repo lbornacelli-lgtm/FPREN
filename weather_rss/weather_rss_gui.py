@@ -28,9 +28,9 @@ REFRESH_INTERVAL = 5  # seconds
 # -------------------------------
 ICECAST_HOST       = "localhost"
 ICECAST_PORT       = 8000
-ICECAST_MOUNT      = "/beacon"
+ICECAST_MOUNT      = "/fpren"
 ICECAST_ADMIN_USER = "admin"
-ICECAST_ADMIN_PASS = "1002LBorn1!"
+ICECAST_ADMIN_PASS = "hackme"
 
 # -------------------------------
 # SERIAL ALERT CONFIG
@@ -56,7 +56,7 @@ AVAILABLE_ZONES = [
 ]
 
 STREAMS = [
-    {"id": "stream_8000", "label": "All Florida",     "port": 8000, "mount": "/beacon",          "default_zone": "all_florida"},
+    {"id": "stream_8000", "label": "All Florida",     "port": 8000, "mount": "/fpren",           "default_zone": "all_florida"},
     {"id": "stream_8001", "label": "North Florida",   "port": 8001, "mount": "/north-florida",   "default_zone": "north_florida"},
     {"id": "stream_8002", "label": "Central Florida", "port": 8002, "mount": "/central-florida", "default_zone": "central_florida"},
     {"id": "stream_8003", "label": "South Florida",   "port": 8003, "mount": "/south-florida",   "default_zone": "south_florida"},
@@ -283,7 +283,7 @@ class SystemdMonitor(tk.Tk):
         icecast_top.pack(fill="x", padx=8, pady=6)
 
         self.icecast_summary_var = tk.StringVar(
-            value="Mount: /beacon  |  Listeners: —  |  Stream started: —"
+            value="Mount: /fpren  |  Listeners: —  |  Stream started: —"
         )
         ttk.Label(icecast_top, textvariable=self.icecast_summary_var,
                   font=("Arial", 11)).pack(side="left")
@@ -1125,7 +1125,7 @@ class SystemdMonitor(tk.Tk):
 
     def _restart_stream(self):
         if not messagebox.askyesno("Restart Stream",
-                                   "Kill the Icecast source on /beacon?\nThis will briefly disconnect listeners."):
+                                   "Kill the Icecast source on /fpren?\nThis will briefly disconnect listeners."):
             return
         url = (
             f"http://{ICECAST_HOST}:{ICECAST_PORT}"

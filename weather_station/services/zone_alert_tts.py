@@ -5,7 +5,7 @@ zone_alert_tts.py
 -----------------
 Monitors MongoDB for NWS alerts and FL511 traffic incidents, routes them
 to the appropriate zone audio folders, and synthesises MP3s via TTSService
-(LiteLLM → ElevenLabs Rachel).
+(gTTS).
 
 Zone routing:
   all_florida   — catch_all=True  → every alert and incident
@@ -214,8 +214,15 @@ def _load_zones(db) -> list:
 
 def _zones_for_alert(alert: dict, zones: list) -> list:
     area_desc = alert.get("area_desc", "")
-    return [z["zone_id"] for z in zones
-            if z.get("catch_all") or _area_matches_zone(area_desc, z.get("counties", []))]
+    event     = alert.get("event", "").lower().strip()
+    result    = []
+    for z in zones:
+        ef = z.get("event_filter")
+        if ef and event not in [e.lower() for e in ef]:
+            continue
+        if z.get("catch_all") or _area_matches_zone(area_desc, z.get("counties", [])):
+            result.append(z["zone_id"])
+    return result
 
 
 def _zones_for_traffic(incident: dict, zones: list) -> list:
@@ -225,15 +232,17 @@ def _zones_for_traffic(incident: dict, zones: list) -> list:
 
 
 def _copy_to_priority1(src: str, zone_id: str, fname: str):
-    for zone in {zone_id, "all_florida"}:
-        dest_dir = os.path.join(ZONES_ROOT, zone, "priority_1")
-        os.makedirs(dest_dir, exist_ok=True)
-        dest = os.path.join(dest_dir, fname)
-        try:
-            shutil.copy2(src, dest)
-            logger.info("Priority-1 copy → %s/priority_1/%s", zone, fname)
-        except OSError as e:
-            logger.error("Priority-1 copy failed to %s: %s", dest, e)
+    # Only copy into the originating zone's priority_1 folder.
+    # all_florida is catch_all and already receives a tracked copy under traffic/,
+    # so adding an untracked copy there would accumulate without cleanup.
+    dest_dir = os.path.join(ZONES_ROOT, zone_id, "priority_1")
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, fname)
+    try:
+        shutil.copy2(src, dest)
+        logger.info("Priority-1 copy → %s/priority_1/%s", zone_id, fname)
+    except OSError as e:
+        logger.error("Priority-1 copy failed to %s: %s", dest, e)
 
 # ── Processing ────────────────────────────────────────────────────────────────
 
@@ -306,7 +315,7 @@ def process_nws_alerts(db, zones: list, tts: TTSService):
                         "area_desc":    alert.get("area_desc", ""),
                         "fetched_at":   fetched_at,
                         "generated_at": datetime.now(timezone.utc),
-                        "tts_engine":   "ElevenLabs",
+                        "tts_engine":   "gTTS",
                     }},
                     upsert=True,
                 )
@@ -321,7 +330,7 @@ def process_traffic(db, zones: list, tts: TTSService):
     cutoff      = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
     current_ids = {str(t["incident_id"]) for t in traffic_col.find({}, {"incident_id": 1})}
 
-    for doc in wavs_col.find({"source_type": "traffic", "$or": [
+    for doc in wavs_col.find({"source_type": {"$in": ["traffic", "traffic_p1"]}, "$or": [
         {"source_id": {"$nin": list(current_ids)}},
         {"generated_at": {"$lt": cutoff}},
     ]}):
@@ -377,13 +386,32 @@ def process_traffic(db, zones: list, tts: TTSService):
                         "severity":     severity,
                         "last_updated": last_updated,
                         "generated_at": datetime.now(timezone.utc),
-                        "tts_engine":   "ElevenLabs",
+                        "tts_engine":   "gTTS",
                     }},
                     upsert=True,
                 )
                 logger.info("Traffic MP3 [%s/traffic] %s", zone_id, fname)
                 if severity.lower() in TRAFFIC_PRIORITY_SEVERITIES:
                     _copy_to_priority1(audio_path, zone_id, fname)
+                    p1_path = _mp3_path(os.path.join(ZONES_ROOT, zone_id, "priority_1", fname))
+                    wavs_col.update_one(
+                        {"source_type": "traffic_p1", "source_id": inc_id, "zone": zone_id},
+                        {"$set": {
+                            "source_type":  "traffic_p1",
+                            "source_id":    inc_id,
+                            "zone":         zone_id,
+                            "alert_folder": "priority_1",
+                            "wav_path":     p1_path,
+                            "county":       inc.get("county", ""),
+                            "road":         inc.get("road", ""),
+                            "severity":     severity,
+                            "last_updated": last_updated,
+                            "generated_at": datetime.now(timezone.utc),
+                            "tts_engine":   "gTTS",
+                        }},
+                        upsert=True,
+                    )
+                    logger.info("Priority-1 record tracked [%s/priority_1] %s", zone_id, fname)
             except Exception as e:
                 logger.error("Failed traffic MP3 %s/traffic/%s: %s", zone_id, fname, e)
 
@@ -407,7 +435,7 @@ def main():
         [("source_type", 1), ("source_id", 1), ("zone", 1)], unique=True
     )
 
-    logger.info("zone_alert_tts started — engine: ElevenLabs via LiteLLM")
+    logger.info("zone_alert_tts started — engine: gTTS")
     logger.info("Output root: %s  |  Interval: %ds", ZONES_ROOT, INTERVAL)
 
     while running:

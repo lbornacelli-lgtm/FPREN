@@ -3,23 +3,26 @@
 """
 zone_alert_tts.py
 -----------------
-Monitors MongoDB for NWS alerts and FL511 traffic incidents, routes them
-to the appropriate zone audio folders, and synthesises MP3s via TTSService
-(gTTS).
+Monitors MongoDB for NWS alerts, FL511 traffic incidents, and airport METAR
+observations, routes them to the appropriate zone audio folders, and synthesises
+MP3s via TTSService (gTTS).
 
 Zone routing:
-  all_florida   — catch_all=True  → every alert and incident
-  north_florida — matches alerts whose area_desc contains a North FL county
+  all_florida   — catch_all=True  → every item
+  north_florida — matches alerts/airports whose county is in North FL
+  (etc. for central, south, tampa, orlando, jacksonville, gainesville, miami)
 
 Audio output paths:
   zones/{zone}/{alert_folder}/{safe_id}.mp3      (NWS alerts)
   zones/{zone}/traffic/{safe_id}.mp3             (traffic incidents)
+  zones/{zone}/airport_weather/{icao}.mp3        (airport METAR)
 
 MongoDB collections:
   zone_definitions  — zone → county list
   zone_alert_wavs   — dedup / change-tracking for generated audio
   nws_alerts        — source NWS alert documents
   fl_traffic        — source FL511 traffic incident documents
+  airport_metar     — ASOS station observations
 """
 
 import json
@@ -92,6 +95,29 @@ ALERT_FOLDER_MAP = {
 PRIORITY_1_SEVERITIES       = {"extreme", "severe"}
 PRIORITY_1_EVENTS           = {"tornado emergency", "flash flood emergency"}
 TRAFFIC_PRIORITY_SEVERITIES = {"major"}
+
+# ── Airport → county mapping (FL airports only; non-FL omitted → skipped) ─────
+
+AIRPORT_COUNTY_MAP = {
+    "KGNV": "alachua",       # Gainesville Regional
+    "KOCF": "marion",        # Ocala Regional
+    "KJAX": "duval",         # Jacksonville International
+    "KTLH": "leon",          # Tallahassee International
+    "KPNS": "escambia",      # Pensacola International
+    "KMCO": "orange",        # Orlando International
+    "KDAB": "volusia",       # Daytona Beach International
+    "KTPA": "hillsborough",  # Tampa International
+    "KLAL": "polk",          # Lakeland Linder International
+    "KSRQ": "manatee",       # Sarasota-Bradenton International
+    "KRSW": "lee",           # Ft Myers SW Florida International
+    "KFLL": "broward",       # Ft Lauderdale-Hollywood International
+    "KMIA": "miami-dade",    # Miami International
+    "KAPF": "collier",       # Naples Municipal
+    "KEYW": "monroe",        # Key West International
+    "KPBI": "palm beach",    # Palm Beach International
+    "KECP": "bay",           # Northwest Florida Beaches International (Panama City)
+    "KPAK": "st. johns",     # Palatka Municipal
+}
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -187,6 +213,98 @@ def _zone_progress(progress: dict, zone_id: str) -> dict:
          "traffic": {"done": 0, "skipped": 0, "failed": 0}},
     )
 
+# ── Airport helpers ───────────────────────────────────────────────────────────
+
+_WIND_DIRS = [
+    "north", "north-northeast", "northeast", "east-northeast",
+    "east", "east-southeast", "southeast", "south-southeast",
+    "south", "south-southwest", "southwest", "west-southwest",
+    "west", "west-northwest", "northwest", "north-northwest",
+]
+
+def _wind_direction(degrees) -> str:
+    try:
+        idx = round(int(degrees) / 22.5) % 16
+        return _WIND_DIRS[idx]
+    except (TypeError, ValueError):
+        return "variable"
+
+
+def _celsius_to_f(c) -> int:
+    try:
+        return round(float(c) * 9 / 5 + 32)
+    except (TypeError, ValueError):
+        return None
+
+
+_COVER_WORDS = {
+    "SKC": "skies clear", "CLR": "skies clear",
+    "FEW": "few clouds",  "SCT": "scattered clouds",
+    "BKN": "broken clouds", "OVC": "overcast",
+    "VV":  "vertical visibility",
+}
+
+_FLTCAT_WORDS = {
+    "VFR":  "VFR",
+    "MVFR": "marginal VFR",
+    "IFR":  "IFR",
+    "LIFR": "low IFR",
+}
+
+def _sky_text(clouds: list) -> str:
+    if not clouds:
+        return "skies clear"
+    lowest = min(clouds, key=lambda c: c.get("base") or 99999)
+    cover  = _COVER_WORDS.get(lowest.get("cover", ""), "clouds")
+    base   = lowest.get("base")
+    if base:
+        return f"{cover} at {base:,} feet"
+    return cover
+
+
+def _parse_gust(raw_ob: str) -> int | None:
+    """Extract gust speed (knots) from raw METAR string, e.g. '06013G25KT'."""
+    m = re.search(r'\d{3}\d{2}G(\d{2,3})KT', raw_ob or "")
+    return int(m.group(1)) if m else None
+
+
+def _build_airport_text(doc: dict) -> str:
+    icao   = doc.get("icaoId", "")
+    name   = doc.get("name", "").split(",")[0].strip()  # e.g. "Orlando Intl"
+    temp_f = _celsius_to_f(doc.get("temp"))
+    dewp_f = _celsius_to_f(doc.get("dewp"))
+    wdir   = doc.get("wdir")
+    wspd   = doc.get("wspd")
+    visib  = doc.get("visib", "")
+    clouds = doc.get("clouds", [])
+    flt    = doc.get("fltCat", "")
+    raw_ob = doc.get("rawOb", "")
+    gust   = _parse_gust(raw_ob)
+
+    parts = [f"Airport weather report for {name}."]
+
+    if temp_f is not None:
+        parts.append(f"Temperature {temp_f} degrees Fahrenheit.")
+
+    if wdir is not None and wspd is not None:
+        wind_dir = _wind_direction(wdir)
+        if wspd == 0:
+            parts.append("Winds calm.")
+        elif gust:
+            parts.append(f"Winds from the {wind_dir} at {wspd} knots, gusting to {gust}.")
+        else:
+            parts.append(f"Winds from the {wind_dir} at {wspd} knots.")
+
+    vis_str = str(visib).replace("+", " or more")
+    parts.append(f"Visibility {vis_str} miles.")
+
+    parts.append(_sky_text(clouds).capitalize() + ".")
+
+    if flt:
+        parts.append(f"Flight category: {_FLTCAT_WORDS.get(flt, flt)}.")
+
+    return " ".join(parts)
+
 # ── Text builders ─────────────────────────────────────────────────────────────
 
 def _build_nws_text(doc: dict) -> str:
@@ -245,6 +363,17 @@ def _zones_for_alert(alert: dict, zones: list) -> list:
         if z.get("catch_all") or _area_matches_zone(area_desc, z.get("counties", [])):
             result.append(z["zone_id"])
     return result
+
+
+def _zones_for_airport(icao: str, zones: list) -> list:
+    """Return zone_ids that should receive audio for this airport.
+    Non-FL airports (not in AIRPORT_COUNTY_MAP) return an empty list.
+    """
+    county = AIRPORT_COUNTY_MAP.get(icao.upper())
+    if not county:
+        return []
+    return [z["zone_id"] for z in zones
+            if z.get("catch_all") or _county_matches_zone(county, z.get("counties", []))]
 
 
 def _zones_for_traffic(incident: dict, zones: list) -> list:
@@ -455,6 +584,73 @@ def process_traffic(db, zones: list, tts: TTSService, progress: dict = None):
                     zp["traffic"]["failed"] += 1
                     _write_progress(progress)
 
+def process_airport_weather(db, zones: list, tts: TTSService, progress: dict = None):
+    """Transcode current METAR observations to MP3 per zone."""
+    wavs_col    = db["zone_alert_wavs"]
+    metar_col   = db["airport_metar"]
+
+    for doc in metar_col.find({}):
+        icao     = doc.get("icaoId", "").upper()
+        obs_time = str(doc.get("obsTime", ""))
+        if not icao or not obs_time:
+            continue
+
+        target_zones = _zones_for_airport(icao, zones)
+        if not target_zones:
+            continue  # non-FL airport
+
+        text  = _build_airport_text(doc)
+        fname = icao.lower() + ".mp3"
+
+        for zone_id in target_zones:
+            zp       = _zone_progress(progress, zone_id) if progress is not None else None
+            existing = wavs_col.find_one({
+                "source_type": "airport_weather",
+                "source_id":   icao,
+                "zone":        zone_id,
+            })
+            audio_path = os.path.join(ZONES_ROOT, zone_id, "airport_weather", fname)
+
+            if (existing
+                    and existing.get("obs_time") == obs_time
+                    and existing.get("wav_path")
+                    and os.path.exists(existing["wav_path"])):
+                if zp is not None:
+                    zp.setdefault("airport", {"done": 0, "skipped": 0, "failed": 0})
+                    zp["airport"]["skipped"] += 1
+                continue
+
+            try:
+                tts.say(text, output_file=audio_path)
+                wavs_col.update_one(
+                    {"source_type": "airport_weather", "source_id": icao, "zone": zone_id},
+                    {"$set": {
+                        "source_type":  "airport_weather",
+                        "source_id":    icao,
+                        "zone":         zone_id,
+                        "alert_folder": "airport_weather",
+                        "wav_path":     audio_path,
+                        "name":         doc.get("name", ""),
+                        "obs_time":     obs_time,
+                        "flt_cat":      doc.get("fltCat", ""),
+                        "generated_at": datetime.now(timezone.utc),
+                        "tts_engine":   "gTTS",
+                    }},
+                    upsert=True,
+                )
+                logger.info("Airport MP3 [%s/%s] %s", zone_id, "airport_weather", fname)
+                if zp is not None:
+                    zp.setdefault("airport", {"done": 0, "skipped": 0, "failed": 0})
+                    zp["airport"]["done"] += 1
+                    _write_progress(progress)
+            except Exception as e:
+                logger.error("Failed airport MP3 %s/%s: %s", zone_id, fname, e)
+                if zp is not None:
+                    zp.setdefault("airport", {"done": 0, "skipped": 0, "failed": 0})
+                    zp["airport"]["failed"] += 1
+                    _write_progress(progress)
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -481,9 +677,10 @@ def main():
     while running:
         try:
             zones = _load_zones(db)
-            logger.info("Loaded %d zones — processing NWS + FL511 traffic", len(zones))
+            logger.info("Loaded %d zones — processing NWS + FL511 traffic + airport weather", len(zones))
             process_nws_alerts(db, zones, tts)
             process_traffic(db, zones, tts)
+            process_airport_weather(db, zones, tts)
         except Exception as e:
             logger.exception("Unexpected error in main loop: %s", e)
         if running:
@@ -518,6 +715,11 @@ def run_once():
     _write_progress(progress)
 
     process_traffic(db, zones, tts, progress=progress)
+
+    progress["phase"] = "airport"
+    _write_progress(progress)
+
+    process_airport_weather(db, zones, tts, progress=progress)
 
     progress["phase"] = "complete"
     progress["completed_at"] = datetime.now(timezone.utc).isoformat()

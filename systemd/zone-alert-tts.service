@@ -10,6 +10,7 @@ WorkingDirectory=/home/ufuser/Fpren-main
 ExecStart=/home/ufuser/Fpren-main/venv/bin/python3 -m weather_station.services.zone_alert_tts
 Restart=on-failure
 RestartSec=15
+TimeoutStopSec=150
 EnvironmentFile=/home/ufuser/Fpren-main/weather_station/.env
 
 [Install]

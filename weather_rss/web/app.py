@@ -1480,6 +1480,103 @@ def api_data_tab():
         "feeds":       feeds,
     })
 
+# -------------------- AI ENDPOINTS --------------
+
+_LITELLM_BASE_URL = os.environ.get("UF_LITELLM_BASE_URL", "https://api.ai.it.ufl.edu")
+_LITELLM_API_KEY  = os.environ.get("UF_LITELLM_API_KEY", "")
+_LITELLM_MODEL    = os.environ.get("UF_LITELLM_MODEL", "gpt-4o-mini")
+
+_REWRITE_SYSTEM = (
+    "You are a professional emergency broadcast radio announcer for FPREN, "
+    "the Florida Public Radio Emergency Network. "
+    "Rewrite the provided NWS alert text as a concise, clear, spoken radio script. "
+    "Rules: write for the ear (spell out abbreviations, plain language), start directly "
+    "with the alert, keep it under 120 words, do not add new information, end with a "
+    "clear call-to-action. Output plain text only."
+)
+
+_BROADCAST_SYSTEM = (
+    "You are a professional weather radio announcer for FPREN covering North Florida. "
+    "Generate a concise spoken broadcast summary from the provided weather and alert data. "
+    "Lead with active alerts, then current conditions, then a brief outlook. "
+    "Keep it under 180 words. Output plain text only."
+)
+
+
+def _ai_chat(prompt: str, system: str, max_tokens: int = 400) -> tuple[bool, str]:
+    """Call LiteLLM and return (ok, text). Returns (False, error_msg) on failure."""
+    if not _LITELLM_API_KEY:
+        return False, "UF_LITELLM_API_KEY is not configured."
+    try:
+        from openai import OpenAI as _OpenAI
+        client = _OpenAI(base_url=_LITELLM_BASE_URL, api_key=_LITELLM_API_KEY)
+        resp = client.chat.completions.create(
+            model=_LITELLM_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": prompt},
+            ],
+            max_tokens=max_tokens,
+        )
+        return True, resp.choices[0].message.content.strip()
+    except Exception as exc:
+        return False, str(exc)
+
+
+@app.route("/api/ai/rewrite-alert", methods=["POST"])
+def api_ai_rewrite_alert():
+    """Rewrite a raw NWS alert into a broadcast-ready radio script.
+
+    POST body: { "headline": str, "area": str, "description": str }
+    """
+    data    = request.get_json(silent=True) or {}
+    headline = data.get("headline", "").strip()
+    area     = data.get("area", "").strip()
+    desc     = data.get("description", "").strip()
+    if not headline:
+        return jsonify({"ok": False, "message": "Missing headline"}), 400
+    prompt = (
+        f"NWS Alert:\nHeadline: {headline}\nAffected areas: {area}\n"
+        f"Description: {desc[:800]}"
+    )
+    ok, text = _ai_chat(prompt, _REWRITE_SYSTEM, max_tokens=300)
+    return jsonify({"ok": ok, "script": text if ok else "", "message": text if not ok else "OK"})
+
+
+@app.route("/api/ai/broadcast", methods=["POST"])
+def api_ai_broadcast():
+    """Generate a full weather broadcast script from current DB data.
+
+    POST body: optional { "max_alerts": int, "max_obs": int }
+    Returns: { "ok": bool, "script": str, "message": str }
+    """
+    data       = request.get_json(silent=True) or {}
+    max_alerts = int(data.get("max_alerts", 5))
+    max_obs    = int(data.get("max_obs", 5))
+
+    # Pull live alerts
+    alert_rows = list(alerts_col.find({}, sort=[("fetched_at", -1)], limit=max_alerts))
+    alert_lines = "\n".join(
+        f"- [{a.get('severity','').upper()}] {a.get('event','')}: {a.get('headline','')}"
+        for a in alert_rows
+    ) or "None active"
+
+    # Pull current METAR observations
+    obs_rows = list(airport_metar_col.find({}, sort=[("icaoId", 1)], limit=max_obs))
+    def _to_f(c):
+        try: return round(float(c) * 9/5 + 32, 1)
+        except: return "?"
+    obs_lines = "\n".join(
+        f"- {o.get('icaoId','')}: {_to_f(o.get('temp',''))}°F, "
+        f"wind {o.get('wspd','?')}kt, vis {o.get('visib','?')}sm"
+        for o in obs_rows
+    ) or "No observations"
+
+    prompt = f"Active NWS Alerts:\n{alert_lines}\n\nCurrent Observations:\n{obs_lines}"
+    ok, text = _ai_chat(prompt, _BROADCAST_SYSTEM, max_tokens=400)
+    return jsonify({"ok": ok, "script": text if ok else "", "message": text if not ok else "OK"})
+
+
 # -------------------- FEEDBACK ------------------
 @app.route("/feedback", methods=["POST"])
 def submit_feedback():

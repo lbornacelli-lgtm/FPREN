@@ -110,18 +110,21 @@ class FPRENApp(tk.Tk):
         self.tab_playlist  = ttk.Frame(self.nb)
         self.tab_icecast   = ttk.Frame(self.nb)
         self.tab_data      = ttk.Frame(self.nb)
+        self.tab_ai        = ttk.Frame(self.nb)
 
         self.nb.add(self.tab_config,   text="Config")
         self.nb.add(self.tab_weather,  text="Weather")
         self.nb.add(self.tab_playlist, text="Playlist")
         self.nb.add(self.tab_icecast,  text="Icecast")
         self.nb.add(self.tab_data,     text="Alerts & Data")
+        self.nb.add(self.tab_ai,       text="AI Broadcast")
 
         self._build_config_tab()
         self._build_weather_tab()
         self._build_playlist_tab()
         self._build_icecast_tab()
         self._build_data_tab()
+        self._build_ai_tab()
 
     # ══════════════════════════════════════════ CONFIG TAB
     def _build_config_tab(self):
@@ -971,6 +974,105 @@ class FPRENApp(tk.Tk):
     def _schedule_refresh(self):
         self._refresh()
         self.after(REFRESH_SEC * 1000, self._schedule_refresh)
+
+
+    # ══════════════════════════════════════════ AI BROADCAST TAB
+    def _build_ai_tab(self):
+        f = self.tab_ai
+        f.configure(style="TFrame")
+
+        tk.Label(f, text="AI Broadcast Tools",
+                 font=("Arial", 13, "bold"),
+                 bg="#f8f9fa").pack(anchor="w", padx=20, pady=(15, 2))
+        tk.Label(f, text="Powered by UF LiteLLM  •  " + API + "/api/ai/…",
+                 font=("Arial", 8), fg="#6c757d",
+                 bg="#f8f9fa").pack(anchor="w", padx=20, pady=(0, 10))
+
+        # ── Rewrite Alert ──────────────────────────────────────────────
+        rw = tk.LabelFrame(f, text="  Rewrite NWS Alert  ",
+                           font=("Arial", 10, "bold"),
+                           bg="white", relief="solid", bd=1)
+        rw.pack(fill="x", padx=20, pady=(0, 12))
+
+        for label, attr, default in [
+            ("Headline:",    "_ai_rw_headline", ""),
+            ("Area:",        "_ai_rw_area",     ""),
+            ("Description:", "_ai_rw_desc",     ""),
+        ]:
+            row = tk.Frame(rw, bg="white")
+            row.pack(fill="x", padx=10, pady=3)
+            tk.Label(row, text=label, font=("Arial", 9), bg="white",
+                     width=12, anchor="e").pack(side="left")
+            v = tk.StringVar()
+            setattr(self, attr, v)
+            tk.Entry(row, textvariable=v, font=("Arial", 10),
+                     relief="solid", bd=1).pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+        self._ai_rw_status = tk.StringVar(value="")
+        tk.Label(rw, textvariable=self._ai_rw_status,
+                 font=("Arial", 9), fg="#0077aa", bg="white").pack(anchor="w", padx=10)
+
+        self._ai_rw_out = tk.Text(rw, height=5, font=("Arial", 10),
+                                  wrap="word", relief="solid", bd=1, bg="#f8f9fa")
+        self._ai_rw_out.pack(fill="x", padx=10, pady=(0, 6))
+
+        tk.Button(rw, text="Rewrite Alert →", command=self._ai_rewrite_alert,
+                  bg="#0d6efd", fg="white", font=("Arial", 9),
+                  relief="flat", padx=12, pady=4).pack(anchor="e", padx=10, pady=(0, 8))
+
+        # ── Generate Broadcast ─────────────────────────────────────────
+        bc = tk.LabelFrame(f, text="  Generate Full Broadcast Script  ",
+                           font=("Arial", 10, "bold"),
+                           bg="white", relief="solid", bd=1)
+        bc.pack(fill="x", padx=20, pady=(0, 12))
+
+        tk.Label(bc, text="Pulls live alerts + METAR observations from the dashboard.",
+                 font=("Arial", 9), fg="#6c757d", bg="white").pack(anchor="w", padx=10, pady=(6, 0))
+
+        self._ai_bc_status = tk.StringVar(value="")
+        tk.Label(bc, textvariable=self._ai_bc_status,
+                 font=("Arial", 9), fg="#0077aa", bg="white").pack(anchor="w", padx=10)
+
+        self._ai_bc_out = tk.Text(bc, height=8, font=("Arial", 10),
+                                  wrap="word", relief="solid", bd=1, bg="#f8f9fa")
+        self._ai_bc_out.pack(fill="x", padx=10, pady=(0, 6))
+
+        tk.Button(bc, text="Generate Broadcast →", command=self._ai_gen_broadcast,
+                  bg="#198754", fg="white", font=("Arial", 9),
+                  relief="flat", padx=12, pady=4).pack(anchor="e", padx=10, pady=(0, 8))
+
+    def _ai_rewrite_alert(self):
+        self._ai_rw_status.set("Calling LiteLLM…")
+        self._ai_rw_out.delete("1.0", "end")
+        payload = {
+            "headline":    self._ai_rw_headline.get().strip(),
+            "area":        self._ai_rw_area.get().strip(),
+            "description": self._ai_rw_desc.get().strip(),
+        }
+        def task():
+            res = api_post("/api/ai/rewrite-alert", payload)
+            def update():
+                if res.get("ok"):
+                    self._ai_rw_status.set("Done.")
+                    self._ai_rw_out.insert("1.0", res.get("script", ""))
+                else:
+                    self._ai_rw_status.set(f"Error: {res.get('message', res.get('_error',''))}")
+            self.after(0, update)
+        threading.Thread(target=task, daemon=True).start()
+
+    def _ai_gen_broadcast(self):
+        self._ai_bc_status.set("Calling LiteLLM…")
+        self._ai_bc_out.delete("1.0", "end")
+        def task():
+            res = api_post("/api/ai/broadcast", {})
+            def update():
+                if res.get("ok"):
+                    self._ai_bc_status.set("Done.")
+                    self._ai_bc_out.insert("1.0", res.get("script", ""))
+                else:
+                    self._ai_bc_status.set(f"Error: {res.get('message', res.get('_error',''))}")
+            self.after(0, update)
+        threading.Thread(target=task, daemon=True).start()
 
 
 class LoginDialog(tk.Tk):

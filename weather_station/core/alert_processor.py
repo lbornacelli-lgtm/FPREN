@@ -3,6 +3,8 @@ import re
 import logging
 from datetime import datetime
 
+from services.ai_broadcast import rewrite_alert
+
 logger = logging.getLogger("AlertProcessor")
 
 
@@ -42,14 +44,9 @@ def process_alerts(mongo_service, tts_engine, file_router):
         desc      = alert["description"]
         area      = alert["area_desc"]
 
-        # Build the spoken text (event title omitted — starts with headline)
-        text = f"{headline}."
-        if area:
-            text += f" Affected areas: {area}."
-        if desc:
-            # Trim description to avoid very long audio — first 500 chars
-            short_desc = desc[:500].rsplit(".", 1)[0] + "."
-            text += f" {short_desc}"
+        # Build the spoken text — AI rewrites to broadcast-quality script,
+        # falls back to raw assembled text if LiteLLM is unavailable.
+        text = rewrite_alert(headline, area, desc)
 
         # Determine output folder based on event type
         folder = file_router.route_alert_by_event(event)

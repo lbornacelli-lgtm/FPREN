@@ -420,6 +420,7 @@ HTML_TEMPLATE = """
   <button onclick="showTab('playlist',this)">Playlist</button>
   <button onclick="showTab('icecast',this)">Icecast</button>
   <button onclick="showTab('data',this)">Alerts &amp; Data</button>
+  <button onclick="showTab('reports',this)">&#128196; Reports</button>
 </nav>
 
 <!-- ===== CONFIG TAB ===== -->
@@ -562,6 +563,7 @@ function showTab(name, btn) {
   if (name === 'playlist') loadPlaylist();
   if (name === 'icecast')  loadIcecast();
   if (name === 'data')     loadDataTab();
+  if (name === 'reports')  loadReports();
 }
 
 function toast(msg, ok=true) {
@@ -990,7 +992,229 @@ function loadDataTab() {
       _tabLoaded['data'] = 0;  // allow immediate retry
     });
 }
+
+// ── Reports tab ─────────────────────────────────────────────────────────────
+function loadReports() {
+  fetch('/api/reports/alert-events')
+    .then(r => r.json())
+    .then(events => {
+      const sel = document.getElementById('rpt-event-filter');
+      sel.innerHTML = '<option value="all">All event types</option>';
+      (events || []).forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e; opt.textContent = e;
+        sel.appendChild(opt);
+      });
+    }).catch(() => {});
+  loadReportsList();
+}
+
+function loadReportsList() {
+  fetch('/api/reports/list')
+    .then(r => r.json())
+    .then(files => {
+      const tbody = document.getElementById('rpt-list-body');
+      if (!files || files.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" style="color:#aaa;text-align:center;padding:14px;">No reports yet</td></tr>';
+        return;
+      }
+      tbody.innerHTML = files.map(f => `
+        <tr>
+          <td>${f.filename}</td>
+          <td>${f.size_kb} KB</td>
+          <td><a href="/api/reports/download/${encodeURIComponent(f.filename)}"
+               target="_blank" style="color:#0077aa;">&#11123; Download</a></td>
+        </tr>`).join('');
+    }).catch(() => {});
+}
+
+function generateReport() {
+  const btn    = document.getElementById('rpt-gen-btn');
+  const status = document.getElementById('rpt-status');
+  const days   = document.getElementById('rpt-days').value;
+  const zone   = document.getElementById('rpt-zone').value;
+  const sev    = Array.from(document.querySelectorAll('.rpt-sev:checked'))
+                       .map(c => c.value).join(',') || 'all';
+  const evt    = document.getElementById('rpt-event-filter').value;
+  const dfrom  = document.getElementById('rpt-date-from').value;
+  const dto    = document.getElementById('rpt-date-to').value;
+  const email  = document.getElementById('rpt-email').checked;
+
+  btn.disabled = true;
+  btn.textContent = 'Generating…';
+  status.style.color = '#0077aa';
+  status.textContent = 'Rendering PDF — this takes 30–60 seconds…';
+
+  fetch('/api/reports/generate', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({days_back: parseInt(days), zone_label: zone,
+                          severity_filter: sev, event_filter: evt,
+                          date_from: dfrom, date_to: dto, send_email: email})
+  })
+  .then(r => r.json())
+  .then(d => {
+    btn.disabled = false;
+    btn.textContent = 'Generate PDF Report';
+    if (d.ok) {
+      status.style.color = '#2e7d32';
+      status.textContent = d.message;
+      loadReportsList();
+    } else {
+      status.style.color = '#c62828';
+      status.textContent = 'Error: ' + d.message;
+    }
+  })
+  .catch(e => {
+    btn.disabled = false;
+    btn.textContent = 'Generate PDF Report';
+    status.style.color = '#c62828';
+    status.textContent = 'Request failed: ' + e;
+  });
+}
+
+function toggleCustomDates() {
+  const show = document.getElementById('rpt-days').value === '0';
+  document.getElementById('rpt-custom-dates').style.display = show ? 'flex' : 'none';
+}
 </script>
+
+<!-- ===== REPORTS TAB ===== -->
+<div id="tab-reports" class="tab-panel">
+  <div style="max-width:960px;">
+
+    <!-- RStudio link card -->
+    <div class="cfg-card" style="background:#f0f7ff;border-color:#0077aa;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+        <div>
+          <h2 style="margin:0 0 4px;">R Studio &amp; Statistical Analysis</h2>
+          <p style="margin:0;font-size:0.85rem;color:#555;">
+            Open RStudio Server to edit the report template, build new charts, or run custom R analysis on the alert data.
+          </p>
+        </div>
+        <a href="http://128.227.67.234:8787" target="_blank"
+           style="background:#0077aa;color:#fff;padding:10px 22px;border-radius:5px;
+                  text-decoration:none;font-weight:600;font-size:0.9rem;white-space:nowrap;">
+          &#128196; Open RStudio Server
+        </a>
+      </div>
+    </div>
+
+    <!-- Generate report card -->
+    <div class="cfg-card">
+      <h2>Generate PDF Report</h2>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+
+        <!-- Date range -->
+        <div>
+          <label style="font-size:.85rem;font-weight:600;color:#333;">Report Period</label><br>
+          <select id="rpt-days" onchange="toggleCustomDates()"
+                  style="width:100%;padding:7px;border:1px solid #ccc;border-radius:4px;margin-top:4px;font-size:.9rem;">
+            <option value="1">Last 24 hours</option>
+            <option value="7" selected>Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="0">Custom date range…</option>
+          </select>
+          <div id="rpt-custom-dates" style="display:none;gap:8px;margin-top:8px;align-items:center;">
+            <input type="date" id="rpt-date-from"
+                   style="flex:1;padding:6px;border:1px solid #ccc;border-radius:4px;font-size:.85rem;">
+            <span style="color:#888;">to</span>
+            <input type="date" id="rpt-date-to"
+                   style="flex:1;padding:6px;border:1px solid #ccc;border-radius:4px;font-size:.85rem;">
+          </div>
+        </div>
+
+        <!-- Zone -->
+        <div>
+          <label style="font-size:.85rem;font-weight:600;color:#333;">Zone</label><br>
+          <select id="rpt-zone"
+                  style="width:100%;padding:7px;border:1px solid #ccc;border-radius:4px;margin-top:4px;font-size:.9rem;">
+            <option>All Florida</option>
+            <option>North Florida</option>
+            <option>Central Florida</option>
+            <option>South Florida</option>
+            <option>Alachua County</option>
+          </select>
+        </div>
+
+        <!-- Severity filter -->
+        <div>
+          <label style="font-size:.85rem;font-weight:600;color:#333;">Severity</label>
+          <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:10px;">
+            <label style="font-size:.85rem;"><input type="checkbox" class="rpt-sev" value="Extreme" checked> Extreme</label>
+            <label style="font-size:.85rem;"><input type="checkbox" class="rpt-sev" value="Severe" checked> Severe</label>
+            <label style="font-size:.85rem;"><input type="checkbox" class="rpt-sev" value="Moderate" checked> Moderate</label>
+            <label style="font-size:.85rem;"><input type="checkbox" class="rpt-sev" value="Minor" checked> Minor</label>
+          </div>
+        </div>
+
+        <!-- Event type filter -->
+        <div>
+          <label style="font-size:.85rem;font-weight:600;color:#333;">Event Type</label><br>
+          <select id="rpt-event-filter"
+                  style="width:100%;padding:7px;border:1px solid #ccc;border-radius:4px;margin-top:4px;font-size:.9rem;">
+            <option value="all">All event types</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Email + generate -->
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;border-top:1px solid #eee;padding-top:12px;">
+        <label style="font-size:.9rem;">
+          <input type="checkbox" id="rpt-email" checked>
+          Email report to <strong>lawrence.bornace@ufl.edu</strong>
+        </label>
+        <button id="rpt-gen-btn" onclick="generateReport()"
+                style="background:#0077aa;color:#fff;border:none;padding:9px 24px;
+                       border-radius:5px;font-size:.95rem;font-weight:600;cursor:pointer;">
+          Generate PDF Report
+        </button>
+      </div>
+      <p id="rpt-status" style="margin:10px 0 0;font-size:.9rem;min-height:1.2em;"></p>
+    </div>
+
+    <!-- Recent reports -->
+    <div class="cfg-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <h2 style="margin:0;">Recent Reports</h2>
+        <button onclick="loadReportsList()"
+                style="background:none;border:1px solid #0077aa;color:#0077aa;
+                       padding:5px 14px;border-radius:4px;cursor:pointer;font-size:.85rem;">
+          Refresh
+        </button>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:.88rem;">
+        <thead>
+          <tr style="background:#f5f5f5;">
+            <th style="text-align:left;padding:8px 10px;border-bottom:2px solid #ddd;">Filename</th>
+            <th style="text-align:left;padding:8px 10px;border-bottom:2px solid #ddd;">Size</th>
+            <th style="text-align:left;padding:8px 10px;border-bottom:2px solid #ddd;">Download</th>
+          </tr>
+        </thead>
+        <tbody id="rpt-list-body">
+          <tr><td colspan="3" style="color:#aaa;text-align:center;padding:14px;">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Scheduled info -->
+    <div class="cfg-card" style="background:#f9fdf9;border-color:#2e7d32;">
+      <h2 style="color:#2e7d32;">Scheduled Reports</h2>
+      <p style="margin:0 0 6px;font-size:.9rem;">
+        &#9200; A daily 7-day report is auto-generated and emailed every day at <strong>6:00 AM</strong>.
+      </p>
+      <p style="margin:0;font-size:.85rem;color:#555;">
+        Reports are saved to <code>/home/ufuser/Fpren-main/reports/output/</code> &mdash;
+        accessible in <a href="http://128.227.67.234:8787" target="_blank" style="color:#0077aa;">RStudio Server</a>
+        or the <a href="http://128.227.67.234:3838/fpren" target="_blank" style="color:#0077aa;">Shiny Dashboard</a>.
+      </p>
+    </div>
+
+  </div>
+</div>
+
 </body>
 </html>
 """
@@ -1575,6 +1799,124 @@ def api_ai_broadcast():
     prompt = f"Active NWS Alerts:\n{alert_lines}\n\nCurrent Observations:\n{obs_lines}"
     ok, text = _ai_chat(prompt, _BROADCAST_SYSTEM, max_tokens=400)
     return jsonify({"ok": ok, "script": text if ok else "", "message": text if not ok else "OK"})
+
+
+# -------------------- REPORTS API ---------------
+REPORTS_DIR   = "/home/ufuser/Fpren-main/reports/output"
+REPORTS_RSCRIPT = "/home/ufuser/Fpren-main/reports/generate_and_email.R"
+_report_lock  = __import__("threading").Lock()
+_report_running = {"value": False}
+
+
+@app.route("/api/reports/alert-events")
+def api_report_alert_events():
+    """Return distinct NWS alert event types for the filter dropdown."""
+    try:
+        events = sorted(alerts_col.distinct("event"))
+        return jsonify(events)
+    except Exception:
+        return jsonify([])
+
+
+@app.route("/api/reports/list")
+def api_report_list():
+    """Return list of generated PDF reports sorted newest first."""
+    import glob
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    files = sorted(
+        glob.glob(os.path.join(REPORTS_DIR, "*.pdf")),
+        key=os.path.getmtime, reverse=True
+    )
+    result = []
+    for f in files[:20]:
+        result.append({
+            "filename": os.path.basename(f),
+            "size_kb":  round(os.path.getsize(f) / 1024, 1),
+            "mtime":    os.path.getmtime(f),
+        })
+    return jsonify(result)
+
+
+@app.route("/api/reports/download/<path:filename>")
+def api_report_download(filename):
+    """Serve a PDF report file."""
+    from flask import send_from_directory, abort
+    safe = os.path.basename(filename)
+    if not safe.endswith(".pdf"):
+        abort(400)
+    filepath = os.path.join(REPORTS_DIR, safe)
+    if not os.path.isfile(filepath):
+        abort(404)
+    return send_from_directory(REPORTS_DIR, safe, mimetype="application/pdf",
+                               as_attachment=True)
+
+
+@app.route("/api/reports/generate", methods=["POST"])
+def api_report_generate():
+    """Trigger Rscript to render and optionally email a PDF report.
+
+    POST body:
+      days_back       int     (default 7)
+      zone_label      str     (default "All Florida")
+      severity_filter str     comma-separated or "all"
+      event_filter    str     single event name or "all"
+      date_from       str     YYYY-MM-DD or ""
+      date_to         str     YYYY-MM-DD or ""
+      send_email      bool    (default true)
+    """
+    import subprocess, threading
+
+    with _report_lock:
+        if _report_running["value"]:
+            return jsonify({"ok": False, "message": "A report is already generating. Please wait."}), 409
+        _report_running["value"] = True
+
+    data            = request.get_json(silent=True) or {}
+    days_back       = str(int(data.get("days_back", 7)))
+    zone_label      = str(data.get("zone_label", "All Florida"))
+    severity_filter = str(data.get("severity_filter", "all"))
+    event_filter    = str(data.get("event_filter", "all"))
+    date_from       = str(data.get("date_from", ""))
+    date_to         = str(data.get("date_to", ""))
+    send_email_flag = "true" if data.get("send_email", True) else "false"
+
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/Rscript", REPORTS_RSCRIPT,
+                days_back, zone_label, severity_filter, event_filter,
+                date_from, date_to, send_email_flag,
+            ],
+            capture_output=True, text=True, timeout=180,
+            env={**__import__("os").environ, "MONGO_URI": "mongodb://localhost:27017/"},
+        )
+        output = result.stdout + result.stderr
+        _report_running["value"] = False
+
+        if result.returncode != 0:
+            return jsonify({"ok": False, "message": output[-400:] or "Rscript failed"}), 500
+
+        # Extract filename from script output
+        filename = ""
+        for line in output.splitlines():
+            if line.startswith("OUTPUT_FILE:"):
+                filename = os.path.basename(line.split(":", 1)[1].strip())
+                break
+
+        msg = f"PDF generated: {filename}"
+        if send_email_flag == "true" and "Email sent" in output:
+            msg += " — emailed to " + (data.get("mail_to") or "lawrence.bornace@ufl.edu")
+        elif send_email_flag == "true":
+            msg += " (email may have failed — check logs)"
+
+        return jsonify({"ok": True, "filename": filename, "message": msg})
+
+    except subprocess.TimeoutExpired:
+        _report_running["value"] = False
+        return jsonify({"ok": False, "message": "Report generation timed out (>3 min)"}), 504
+    except Exception as exc:
+        _report_running["value"] = False
+        return jsonify({"ok": False, "message": str(exc)}), 500
 
 
 # -------------------- FEEDBACK ------------------

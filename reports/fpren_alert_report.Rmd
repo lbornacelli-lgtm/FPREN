@@ -24,6 +24,10 @@ params:
   days_back: 7
   zone_label: "All Florida"
   mongo_uri: "mongodb://localhost:27017/"
+  severity_filter: "all"
+  event_filter: "all"
+  date_from: ""
+  date_to: ""
 ---
 
 ```{r setup, include=FALSE}
@@ -55,14 +59,26 @@ get_col <- function(collection) {
   )
 }
 
-cutoff <- Sys.time() - days(params$days_back)
-cutoff_iso <- format(cutoff, "%Y-%m-%dT%H:%M:%SZ")
+# ── Date range ───────────────────────────────────────────────────────────────
+if (nchar(params$date_from) > 0 && nchar(params$date_to) > 0) {
+  cutoff     <- as.POSIXct(paste0(params$date_from, "T00:00:00Z"), tz = "UTC")
+  cutoff_end <- as.POSIXct(paste0(params$date_to,   "T23:59:59Z"), tz = "UTC")
+  date_query <- paste0(
+    '{"fetched_at": {"$gte": {"$date": "', format(cutoff, "%Y-%m-%dT%H:%M:%SZ"),
+    '"}, "$lte": {"$date": "', format(cutoff_end, "%Y-%m-%dT%H:%M:%SZ"), '"}}}'
+  )
+} else {
+  cutoff     <- Sys.time() - days(params$days_back)
+  cutoff_end <- Sys.time()
+  date_query <- paste0('{"fetched_at": {"$gte": {"$date": "',
+                        format(cutoff, "%Y-%m-%dT%H:%M:%SZ"), '"}}}')
+}
 
 col <- get_col("nws_alerts")
 alerts_raw <- if (!is.null(col)) {
   tryCatch({
     df <- col$find(
-      query  = paste0('{"fetched_at": {"$gte": {"$date": "', cutoff_iso, '"}}}'),
+      query  = date_query,
       fields = '{"alert_id":1,"event":1,"headline":1,"severity":1,
                  "area_desc":1,"source":1,"sent":1,"fetched_at":1,
                  "tts_generated":1,"alachua_county":1,"_id":0}'
@@ -72,7 +88,21 @@ alerts_raw <- if (!is.null(col)) {
   }, error = function(e) { col$disconnect(); data.frame() })
 } else data.frame()
 
-# Normalise timestamps
+# ── Apply severity / event filters ───────────────────────────────────────────
+if (nrow(alerts_raw) > 0) {
+  if (!is.null(params$severity_filter) && params$severity_filter != "all" &&
+      nchar(params$severity_filter) > 0) {
+    sevs <- trimws(strsplit(params$severity_filter, ",")[[1]])
+    alerts_raw <- alerts_raw %>% filter(severity %in% sevs)
+  }
+  if (!is.null(params$event_filter) && params$event_filter != "all" &&
+      nchar(params$event_filter) > 0) {
+    evts <- trimws(strsplit(params$event_filter, ",")[[1]])
+    alerts_raw <- alerts_raw %>% filter(event %in% evts)
+  }
+}
+
+# ── Normalise timestamps ──────────────────────────────────────────────────────
 if (nrow(alerts_raw) > 0 && "fetched_at" %in% names(alerts_raw)) {
   alerts_raw$fetched_at <- as.POSIXct(alerts_raw$fetched_at, tz = "UTC")
   alerts_raw$date       <- as.Date(alerts_raw$fetched_at, tz = "America/New_York")

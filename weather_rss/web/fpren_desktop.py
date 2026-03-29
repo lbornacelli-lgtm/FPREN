@@ -119,12 +119,16 @@ class FPRENApp(tk.Tk):
         self.nb.add(self.tab_data,     text="Alerts & Data")
         self.nb.add(self.tab_ai,       text="AI Broadcast")
 
+        self.tab_reports   = ttk.Frame(self.nb)
+        self.nb.add(self.tab_reports,  text="📄 Reports")
+
         self._build_config_tab()
         self._build_weather_tab()
         self._build_playlist_tab()
         self._build_icecast_tab()
         self._build_data_tab()
         self._build_ai_tab()
+        self._build_reports_tab()
 
     # ══════════════════════════════════════════ CONFIG TAB
     def _build_config_tab(self):
@@ -1057,6 +1061,198 @@ class FPRENApp(tk.Tk):
                     self._ai_rw_out.insert("1.0", res.get("script", ""))
                 else:
                     self._ai_rw_status.set(f"Error: {res.get('message', res.get('_error',''))}")
+            self.after(0, update)
+        threading.Thread(target=task, daemon=True).start()
+
+    # ══════════════════════════════════════════ REPORTS TAB
+    def _build_reports_tab(self):
+        f = self.tab_reports
+        f.configure(style="TFrame")
+
+        tk.Label(f, text="PDF Alert Reports",
+                 font=("Arial", 13, "bold"), bg="#f8f9fa").pack(
+            anchor="w", padx=20, pady=(15, 2))
+        tk.Label(f, text="Generate, email, and download reports — powered by R + RStudio",
+                 font=("Arial", 8), fg="#6c757d", bg="#f8f9fa").pack(
+            anchor="w", padx=20, pady=(0, 10))
+
+        # ── RStudio link ───────────────────────────────────────────────────────
+        rstudio_card = tk.Frame(f, bg="#e8f4fd", relief="solid", bd=1)
+        rstudio_card.pack(fill="x", padx=20, pady=(0, 10))
+        inner = tk.Frame(rstudio_card, bg="#e8f4fd", padx=12, pady=8)
+        inner.pack(fill="x")
+        tk.Label(inner, text="RStudio Server — edit templates, run custom R analysis",
+                 font=("Arial", 9), bg="#e8f4fd").pack(side="left")
+        tk.Button(inner, text="Open RStudio Server →",
+                  command=lambda: __import__("webbrowser").open("http://128.227.67.234:8787"),
+                  bg="#0077aa", fg="white", font=("Arial", 9),
+                  relief="flat", padx=10, pady=4).pack(side="right")
+
+        # ── Filters card ───────────────────────────────────────────────────────
+        filters = tk.LabelFrame(f, text="  Report Filters  ",
+                                font=("Arial", 10, "bold"),
+                                bg="white", relief="solid", bd=1)
+        filters.pack(fill="x", padx=20, pady=(0, 10))
+        fg = tk.Frame(filters, bg="white", padx=12, pady=10)
+        fg.pack(fill="x")
+
+        # Row 1 — period + zone
+        row1 = tk.Frame(fg, bg="white")
+        row1.pack(fill="x", pady=(0, 8))
+
+        tk.Label(row1, text="Period:", font=("Arial", 9), bg="white",
+                 width=10, anchor="e").pack(side="left")
+        self._rpt_days = tk.StringVar(value="7")
+        ttk.Combobox(row1, textvariable=self._rpt_days, width=16, state="readonly",
+                     values=["1","7","14","30"]).pack(side="left", padx=(4, 20))
+        tk.Label(row1, text="days", font=("Arial", 9), bg="white").pack(side="left", padx=(0, 20))
+
+        tk.Label(row1, text="Zone:", font=("Arial", 9), bg="white",
+                 width=6, anchor="e").pack(side="left")
+        self._rpt_zone = tk.StringVar(value="All Florida")
+        ttk.Combobox(row1, textvariable=self._rpt_zone, width=18, state="readonly",
+                     values=["All Florida","North Florida","Central Florida",
+                             "South Florida","Alachua County"]).pack(side="left", padx=4)
+
+        # Row 2 — severity
+        row2 = tk.Frame(fg, bg="white")
+        row2.pack(fill="x", pady=(0, 8))
+        tk.Label(row2, text="Severity:", font=("Arial", 9), bg="white",
+                 width=10, anchor="e").pack(side="left")
+        self._rpt_sev_vars = {}
+        for sev, color in [("Extreme","#c0392b"),("Severe","#e67e22"),
+                            ("Moderate","#f1c40f"),("Minor","#2ecc71")]:
+            v = tk.BooleanVar(value=True)
+            self._rpt_sev_vars[sev] = v
+            tk.Checkbutton(row2, text=sev, variable=v,
+                           bg="white", font=("Arial", 9),
+                           fg=color).pack(side="left", padx=6)
+
+        # Row 3 — event type + email
+        row3 = tk.Frame(fg, bg="white")
+        row3.pack(fill="x", pady=(0, 4))
+        tk.Label(row3, text="Event:", font=("Arial", 9), bg="white",
+                 width=10, anchor="e").pack(side="left")
+        self._rpt_event = tk.StringVar(value="all")
+        self._rpt_event_cb = ttk.Combobox(row3, textvariable=self._rpt_event,
+                                           width=28, state="readonly",
+                                           values=["all"])
+        self._rpt_event_cb.pack(side="left", padx=4)
+        tk.Button(row3, text="Refresh events", font=("Arial", 8),
+                  command=self._rpt_load_events,
+                  bg="#eee", relief="flat", padx=6).pack(side="left", padx=8)
+
+        # Row 4 — email + generate
+        row4 = tk.Frame(fg, bg="white")
+        row4.pack(fill="x", pady=(6, 0))
+        self._rpt_email_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(row4, text="Email report after generating",
+                       variable=self._rpt_email_var,
+                       bg="white", font=("Arial", 9)).pack(side="left")
+        self._rpt_gen_btn = tk.Button(row4, text="Generate PDF Report",
+                                       command=self._rpt_generate,
+                                       bg="#0077aa", fg="white",
+                                       font=("Arial", 10, "bold"),
+                                       relief="flat", padx=14, pady=5)
+        self._rpt_gen_btn.pack(side="right")
+
+        self._rpt_status = tk.StringVar(value="")
+        tk.Label(filters, textvariable=self._rpt_status,
+                 font=("Arial", 9), fg="#0077aa",
+                 bg="white").pack(anchor="w", padx=14, pady=(0, 8))
+
+        # ── Recent reports ────────────────────────────────────────────────────
+        rpt_list = tk.LabelFrame(f, text="  Recent Reports  ",
+                                 font=("Arial", 10, "bold"),
+                                 bg="white", relief="solid", bd=1)
+        rpt_list.pack(fill="both", expand=True, padx=20, pady=(0, 12))
+
+        cols = ("Filename", "Size", "Download")
+        self._rpt_tree = ttk.Treeview(rpt_list, columns=cols,
+                                       show="headings", height=8)
+        for c, w in zip(cols, [340, 70, 100]):
+            self._rpt_tree.heading(c, text=c)
+            self._rpt_tree.column(c, width=w, anchor="w")
+
+        vsb = ttk.Scrollbar(rpt_list, orient="vertical",
+                             command=self._rpt_tree.yview)
+        self._rpt_tree.configure(yscrollcommand=vsb.set)
+        self._rpt_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        self._rpt_tree.bind("<Double-1>", self._rpt_open_selected)
+
+        btn_row = tk.Frame(rpt_list, bg="white")
+        btn_row.pack(fill="x", padx=6, pady=4)
+        tk.Button(btn_row, text="Refresh List", command=self._rpt_load_list,
+                  bg="#6c757d", fg="white", font=("Arial", 9),
+                  relief="flat", padx=10).pack(side="left")
+        tk.Label(btn_row, text="Double-click a row to open in browser",
+                 font=("Arial", 8), fg="#888", bg="white").pack(side="left", padx=10)
+
+        # Load initial data
+        self._rpt_load_events()
+        self._rpt_load_list()
+
+    def _rpt_load_events(self):
+        def task():
+            res = api_get("/api/reports/alert-events")
+            def update():
+                if isinstance(res, list):
+                    self._rpt_event_cb["values"] = ["all"] + res
+            self.after(0, update)
+        threading.Thread(target=task, daemon=True).start()
+
+    def _rpt_load_list(self):
+        def task():
+            res = api_get("/api/reports/list")
+            def update():
+                self._rpt_tree.delete(*self._rpt_tree.get_children())
+                if not isinstance(res, list) or len(res) == 0:
+                    self._rpt_tree.insert("", "end",
+                        values=("No reports yet", "", ""))
+                    return
+                for r in res:
+                    self._rpt_tree.insert("", "end", values=(
+                        r.get("filename",""),
+                        f"{r.get('size_kb',0)} KB",
+                        "⬇ Download",
+                    ))
+            self.after(0, update)
+        threading.Thread(target=task, daemon=True).start()
+
+    def _rpt_open_selected(self, event=None):
+        sel = self._rpt_tree.selection()
+        if not sel:
+            return
+        fname = self._rpt_tree.item(sel[0])["values"][0]
+        if fname and fname != "No reports yet":
+            __import__("webbrowser").open(
+                f"{API}/api/reports/download/{fname}")
+
+    def _rpt_generate(self):
+        self._rpt_gen_btn.config(state="disabled", text="Generating…")
+        self._rpt_status.set("Rendering PDF — this takes 30–60 seconds…")
+        sevs = [s for s, v in self._rpt_sev_vars.items() if v.get()]
+        payload = {
+            "days_back":       int(self._rpt_days.get()),
+            "zone_label":      self._rpt_zone.get(),
+            "severity_filter": ",".join(sevs) if sevs else "all",
+            "event_filter":    self._rpt_event.get(),
+            "date_from":       "",
+            "date_to":         "",
+            "send_email":      self._rpt_email_var.get(),
+        }
+        def task():
+            res = api_post("/api/reports/generate", payload)
+            def update():
+                self._rpt_gen_btn.config(state="normal", text="Generate PDF Report")
+                if res.get("ok"):
+                    self._rpt_status.set(res.get("message","Done."))
+                    self._rpt_load_list()
+                else:
+                    self._rpt_status.set(
+                        f"Error: {res.get('message', res.get('_error',''))}")
             self.after(0, update)
         threading.Thread(target=task, daemon=True).start()
 

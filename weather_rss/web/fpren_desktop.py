@@ -57,9 +57,17 @@ class FPRENApp(tk.Tk):
         self.title("FPREN Alerts Dashboard")
         self.geometry("1300x800")
         self.configure(bg="#212529")
+        self._after_id = None
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_header()
         self._build_tabs()
         self._schedule_refresh()
+
+    def _on_close(self):
+        if self._after_id is not None:
+            self.after_cancel(self._after_id)
+        self.quit()
+        self.destroy()
 
     # ── Header ───────────────────────────────────────────────────────
     def _build_header(self):
@@ -105,30 +113,32 @@ class FPRENApp(tk.Tk):
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True)
 
-        self.tab_config    = ttk.Frame(self.nb)
-        self.tab_weather   = ttk.Frame(self.nb)
-        self.tab_playlist  = ttk.Frame(self.nb)
-        self.tab_icecast   = ttk.Frame(self.nb)
-        self.tab_data      = ttk.Frame(self.nb)
-        self.tab_ai        = ttk.Frame(self.nb)
+        self.tab_weather       = ttk.Frame(self.nb)
+        self.tab_playlist      = ttk.Frame(self.nb)
+        self.tab_icecast       = ttk.Frame(self.nb)
+        self.tab_data          = ttk.Frame(self.nb)
+        self.tab_ai            = ttk.Frame(self.nb)
+        self.tab_reports       = ttk.Frame(self.nb)
+        self.tab_stream_notify = ttk.Frame(self.nb)
+        self.tab_config        = ttk.Frame(self.nb)   # always last
 
-        self.nb.add(self.tab_config,   text="Config")
-        self.nb.add(self.tab_weather,  text="Weather")
-        self.nb.add(self.tab_playlist, text="Playlist")
-        self.nb.add(self.tab_icecast,  text="Icecast")
-        self.nb.add(self.tab_data,     text="Alerts & Data")
-        self.nb.add(self.tab_ai,       text="AI Broadcast")
+        self.nb.add(self.tab_weather,       text="Weather")
+        self.nb.add(self.tab_playlist,      text="Playlist")
+        self.nb.add(self.tab_icecast,       text="Icecast")
+        self.nb.add(self.tab_data,          text="Alerts & Data")
+        self.nb.add(self.tab_ai,            text="AI Broadcast")
+        self.nb.add(self.tab_reports,       text="📄 Reports")
+        self.nb.add(self.tab_stream_notify, text="🔔 Stream Alerts")
+        self.nb.add(self.tab_config,        text="⚙ Config")   # always last
 
-        self.tab_reports   = ttk.Frame(self.nb)
-        self.nb.add(self.tab_reports,  text="📄 Reports")
-
-        self._build_config_tab()
         self._build_weather_tab()
         self._build_playlist_tab()
         self._build_icecast_tab()
         self._build_data_tab()
         self._build_ai_tab()
         self._build_reports_tab()
+        self._build_stream_notify_tab()
+        self._build_config_tab()
 
     # ══════════════════════════════════════════ CONFIG TAB
     def _build_config_tab(self):
@@ -212,6 +222,38 @@ class FPRENApp(tk.Tk):
         self._zone_frame = tk.Frame(zone_card, bg="white")
         self._zone_frame.pack(fill="x")
 
+        # Stream Control card
+        sc_card = tk.LabelFrame(inner, text="  Stream Control  ",
+                                 font=("Arial", 10, "bold"),
+                                 bg="white", relief="solid", bd=1, padx=15, pady=10)
+        sc_card.pack(fill="x", padx=20, pady=(15, 20))
+
+        # Header row
+        hdr = tk.Frame(sc_card, bg="#0077aa")
+        hdr.pack(fill="x")
+        for text, w in [("Stream", 160), ("Port", 60), ("Mount", 140), ("Status", 90), ("Action", 80)]:
+            tk.Label(hdr, text=text, font=("Arial", 9, "bold"),
+                     fg="white", bg="#0077aa", width=w//8,
+                     anchor="w", padx=4).pack(side="left")
+
+        self._sc_rows_frame = tk.Frame(sc_card, bg="white")
+        self._sc_rows_frame.pack(fill="x")
+        self._sc_status_labels = {}   # stream_id -> Label widget
+        self._sc_action_buttons = {}  # stream_id -> Button widget
+
+        sc_btn_row = tk.Frame(sc_card, bg="white")
+        sc_btn_row.pack(fill="x", pady=(10, 0))
+        self._sc_engine_msg = tk.StringVar(value="")
+        tk.Label(sc_btn_row, textvariable=self._sc_engine_msg,
+                 font=("Arial", 9), fg="#198754", bg="white").pack(side="left", padx=6)
+        tk.Button(sc_btn_row, text="\u21ba Restart Broadcast Engine",
+                  command=self._sc_restart_engine,
+                  bg="#0077aa", fg="white", font=("Arial", 9),
+                  relief="flat", padx=10, pady=4).pack(side="right")
+        tk.Label(sc_card,
+                 text="Stop kills the audio source for that mount. Restart Engine reconnects all stream sources.",
+                 font=("Arial", 8), fg="#888", bg="white").pack(anchor="w", pady=(6, 0))
+
     def _populate_config(self, smtp, streams):
         # Only load SMTP fields on first load, never overwrite after that
         if not getattr(self, "_smtp_loaded_once", False):
@@ -245,6 +287,90 @@ class FPRENApp(tk.Tk):
     def _zone_save(self, stream_id, zone):
         res = api_post(f"/api/streams/{stream_id}/zone", {"zone": zone})
         self._zone_status.set(res.get("message", res.get("_error", "")))
+
+    def _populate_stream_control(self, icecast_data):
+        if not isinstance(icecast_data, list):
+            return
+        frame = self._sc_rows_frame
+        # Build rows on first call; update status labels on subsequent calls
+        if not self._sc_status_labels:
+            for w in frame.winfo_children():
+                w.destroy()
+            for i, s in enumerate(icecast_data):
+                bg = "#f8f9fa" if i % 2 == 0 else "white"
+                row = tk.Frame(frame, bg=bg)
+                row.pack(fill="x")
+                tk.Label(row, text=s.get("label", ""), font=("Arial", 9),
+                         bg=bg, width=20, anchor="w", padx=4).pack(side="left")
+                tk.Label(row, text=str(s.get("port", "")), font=("Arial", 9, "bold"),
+                         fg="#0077aa", bg=bg, width=7, anchor="w").pack(side="left")
+                tk.Label(row, text=s.get("mount", ""), font=("Arial", 9),
+                         bg=bg, width=17, anchor="w").pack(side="left")
+                status_lbl = tk.Label(row, text="", font=("Arial", 9, "bold"),
+                                      bg=bg, width=11, anchor="w")
+                status_lbl.pack(side="left")
+                self._sc_status_labels[s["id"]] = status_lbl
+                sid = s["id"]
+                mount = s["mount"]
+                btn = tk.Button(row, text="Start",
+                                command=self._sc_start,
+                                bg="#2e7d32", fg="white", font=("Arial", 8),
+                                relief="flat", padx=8, pady=2)
+                btn.pack(side="left", padx=4)
+                self._sc_action_buttons[s["id"]] = btn
+        # Always update status colours and swap Stop/Start buttons
+        for s in icecast_data:
+            lbl = self._sc_status_labels.get(s["id"])
+            if lbl:
+                if s.get("live"):
+                    lbl.config(text="● Live", fg="#2e7d32")
+                else:
+                    lbl.config(text="● Offline", fg="#c62828")
+            btn = self._sc_action_buttons.get(s["id"])
+            if btn:
+                if s.get("live"):
+                    btn.config(text="Stop", bg="#c62828",
+                               command=lambda sid=s["id"], m=s["mount"]: self._sc_stop(sid, m))
+                else:
+                    btn.config(text="Start", bg="#2e7d32",
+                               command=self._sc_start)
+
+    def _sc_stop(self, stream_id, mount):
+        from tkinter import messagebox
+        if not messagebox.askyesno("Stop Stream",
+                                   f"Stop audio source for {mount}?"):
+            return
+        def task():
+            res = api_post(f"/api/streams/{stream_id}/stop")
+            msg = res.get("message", res.get("_error", "Done"))
+            self.after(0, lambda: self._sc_engine_msg.set(msg))
+            import time; time.sleep(2)
+            self.after(0, lambda: self._sc_engine_msg.set(""))
+        threading.Thread(target=task, daemon=True).start()
+
+    def _sc_start(self):
+        self._sc_engine_msg.set("Starting\u2026")
+        def task():
+            res = api_post("/api/streams/start-engine")
+            msg = res.get("message", res.get("_error", "Done"))
+            self.after(0, lambda: self._sc_engine_msg.set(msg))
+            import time; time.sleep(4)
+            self.after(0, lambda: self._sc_engine_msg.set(""))
+        threading.Thread(target=task, daemon=True).start()
+
+    def _sc_restart_engine(self):
+        from tkinter import messagebox
+        if not messagebox.askyesno("Restart Engine",
+                                   "Restart the broadcast engine?\nAll streams will reconnect."):
+            return
+        self._sc_engine_msg.set("Restarting\u2026")
+        def task():
+            res = api_post("/api/streams/restart-engine")
+            msg = res.get("message", res.get("_error", "Done"))
+            self.after(0, lambda: self._sc_engine_msg.set(msg))
+            import time; time.sleep(5)
+            self.after(0, lambda: self._sc_engine_msg.set(""))
+        threading.Thread(target=task, daemon=True).start()
 
     # ══════════════════════════════════════════ WEATHER TAB
     def _build_weather_tab(self):
@@ -722,9 +848,15 @@ class FPRENApp(tk.Tk):
     def _build_icecast_tab(self):
         f = self.tab_icecast
 
-        tk.Label(f, text="Icecast Stream Status",
+        hdr = tk.Frame(f, bg="#f8f9fa")
+        hdr.pack(fill="x", padx=20, pady=(15, 5))
+        tk.Label(hdr, text="Icecast Stream Status",
                  font=("Arial", 12, "bold"),
-                 bg="#f8f9fa").pack(anchor="w", padx=20, pady=(15, 5))
+                 bg="#f8f9fa").pack(side="left")
+        tk.Button(hdr, text="\u21ba Refresh",
+                  command=self._refresh_icecast,
+                  bg="#0077aa", fg="white", font=("Arial", 9),
+                  relief="flat", padx=10, pady=3).pack(side="right")
 
         self._ice_frame = tk.Frame(f, bg="#f8f9fa")
         self._ice_frame.pack(fill="both", expand=True, padx=20)
@@ -760,6 +892,13 @@ class FPRENApp(tk.Tk):
         tree.configure(yscrollcommand=vsb.set)
         tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
+
+    def _refresh_icecast(self):
+        def task():
+            data = api_get("/api/icecast")
+            if isinstance(data, list):
+                self.after(0, lambda: self._populate_icecast(data))
+        threading.Thread(target=task, daemon=True).start()
 
     # ══════════════════════════════════════════ ALERTS & DATA TAB
     def _build_data_tab(self):
@@ -821,8 +960,13 @@ class FPRENApp(tk.Tk):
             "Moderate": "#fff9e6",
         }
         alert_rows = []
-        for a in alerts:
-            wav = "▶ WAV" if a.get("alert_id") else "Pending"
+        self._alert_audio_ids = {}  # row_index -> audio_id
+        for i, a in enumerate(alerts):
+            audio_id = a.get("audio_id")
+            ext      = a.get("audio_ext") or "MP3"
+            badge    = f"⬇ {ext}" if audio_id else "Pending"
+            if audio_id:
+                self._alert_audio_ids[i] = audio_id
             alert_rows.append((
                 a.get("event", "—"),
                 (a.get("headline") or "—")[:60],
@@ -830,17 +974,18 @@ class FPRENApp(tk.Tk):
                 (a.get("area_desc") or "—")[:50],
                 a.get("sender", "—"),
                 a.get("sent", "—"),
-                wav,
+                badge,
                 a.get("severity", ""),
             ))
-        self._make_table(
+        alert_tree = self._make_table(
             self._data_inner,
             f"NWS Alerts ({len(alerts)} most recent)",
-            ("Event", "Headline", "Severity", "Areas", "Sender", "Sent", "WAV"),
+            ("Event", "Headline", "Severity", "Areas", "Sender", "Sent", "Audio"),
             [140, 250, 90, 200, 100, 130, 70],
             alert_rows,
             row_colors={**{k: v for k, v in sev_colors.items()}}
         )
+        alert_tree.bind("<Double-1>", self._on_alert_audio_dclick)
 
         # Airport METAR
         airports = data.get("airports", [])
@@ -897,6 +1042,132 @@ class FPRENApp(tk.Tk):
             feed_rows,
             row_colors=feed_colors
         )
+
+        # Alert Audio Library
+        self._build_audio_library_card(self._data_inner)
+
+    def _build_audio_library_card(self, parent):
+        card = tk.LabelFrame(parent, text="  Alert Audio Library  ",
+                              font=("Arial", 10, "bold"),
+                              bg="white", relief="solid", bd=1)
+        card.pack(fill="x", padx=20, pady=(10, 0))
+
+        ctrl = tk.Frame(card, bg="white")
+        ctrl.pack(fill="x", padx=4, pady=(6, 4))
+        tk.Label(ctrl, text="Zone:", font=("Arial", 9), bg="white").pack(side="left")
+        self._za_zone_var = tk.StringVar(value="all_florida")
+        zone_sel = ttk.Combobox(ctrl, textvariable=self._za_zone_var,
+                                 state="readonly", width=20)
+        zone_sel.pack(side="left", padx=(4, 8))
+        self._za_zone_combo = zone_sel
+        self._za_page = 1
+        tk.Button(ctrl, text="Load / Refresh",
+                  command=lambda: self._load_audio_library(1),
+                  bg="#0077aa", fg="white", font=("Arial", 8),
+                  relief="flat", padx=8).pack(side="left")
+        tk.Button(ctrl, text="◀ Prev",
+                  command=lambda: self._load_audio_library(max(1, self._za_page - 1)),
+                  bg="#6c757d", fg="white", font=("Arial", 8),
+                  relief="flat", padx=6).pack(side="left", padx=(8, 2))
+        tk.Button(ctrl, text="Next ▶",
+                  command=lambda: self._load_audio_library(self._za_page + 1),
+                  bg="#6c757d", fg="white", font=("Arial", 8),
+                  relief="flat", padx=6).pack(side="left", padx=2)
+        self._za_page_lbl = tk.Label(ctrl, text="", font=("Arial", 8),
+                                      fg="#666", bg="white")
+        self._za_page_lbl.pack(side="left", padx=6)
+        tk.Label(ctrl, text="Double-click a row to save the audio file",
+                 font=("Arial", 8), fg="#888", bg="white").pack(side="right", padx=4)
+
+        cols = ("Event", "Category", "Areas", "Severity", "Generated", "File")
+        self._za_tree = ttk.Treeview(card, columns=cols, show="headings", height=10)
+        for c, w in zip(cols, [160, 110, 220, 90, 130, 60]):
+            self._za_tree.heading(c, text=c)
+            self._za_tree.column(c, width=w, anchor="w")
+        vsb = ttk.Scrollbar(card, orient="vertical", command=self._za_tree.yview)
+        self._za_tree.configure(yscrollcommand=vsb.set)
+        self._za_tree.pack(side="left", fill="both", expand=True, padx=4, pady=4)
+        vsb.pack(side="right", fill="y", pady=4)
+        self._za_tree.bind("<Double-1>", self._on_za_dclick)
+        self._za_items = {}  # iid -> doc_id
+        self._load_audio_library(1)
+
+    def _load_audio_library(self, page):
+        zone = self._za_zone_var.get() or "all_florida"
+        self._za_page = page
+        def task():
+            d = api_get(f"/api/zone-audio?zone={zone}&page={page}")
+            self.after(0, lambda: self._populate_audio_library(d))
+        threading.Thread(target=task, daemon=True).start()
+
+    def _populate_audio_library(self, d):
+        if not isinstance(d, dict) or d.get("_error"):
+            return
+        # Update zone dropdown if needed
+        zones = d.get("zones", [])
+        if zones and not self._za_zone_combo["values"]:
+            self._za_zone_combo["values"] = zones
+        total = d.get("total", 0)
+        limit = d.get("limit", 50)
+        page  = d.get("page", 1)
+        pages = max(1, (total + limit - 1) // limit)
+        self._za_page_lbl.config(
+            text=f"Page {page}/{pages}  ({total:,} total)")
+        self._za_tree.delete(*self._za_tree.get_children())
+        self._za_items.clear()
+        for item in d.get("items", []):
+            ext  = item.get("ext", "MP3")
+            label = f"⬇ {ext}" if item.get("exists") else "Missing"
+            iid = self._za_tree.insert("", "end", values=(
+                item.get("event", "—"),
+                item.get("alert_folder", "—"),
+                (item.get("area_desc") or "—")[:40],
+                item.get("severity", "—"),
+                item.get("generated_at", "—"),
+                label,
+            ))
+            self._za_items[iid] = item.get("id")
+
+    def _on_za_dclick(self, event):
+        sel = self._za_tree.selection()
+        if not sel:
+            return
+        doc_id = self._za_items.get(sel[0])
+        if doc_id:
+            self._save_audio_file(doc_id)
+
+    def _on_alert_audio_dclick(self, event):
+        tree = event.widget
+        row  = tree.identify_row(event.y)
+        if not row:
+            return
+        idx = tree.index(row)
+        audio_id = getattr(self, "_alert_audio_ids", {}).get(idx)
+        if audio_id:
+            self._save_audio_file(audio_id)
+
+    def _save_audio_file(self, doc_id):
+        from tkinter import filedialog, messagebox
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".mp3",
+            filetypes=[("MP3 audio", "*.mp3"), ("WAV audio", "*.wav"),
+                       ("All files", "*.*")],
+            title="Save Audio File",
+        )
+        if not save_path:
+            return
+        def task():
+            try:
+                r = _session.get(f"{API}/audio/download/{doc_id}", timeout=30)
+                r.raise_for_status()
+                with open(save_path, "wb") as fh:
+                    fh.write(r.content)
+                self.after(0, lambda: messagebox.showinfo(
+                    "Saved", f"Audio saved to:\n{save_path}"))
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror(
+                    "Save Failed", str(e)))
+        threading.Thread(target=task, daemon=True).start()
 
     # ══════════════════════════════════════════ FEEDBACK
     def _show_feedback(self):
@@ -972,12 +1243,13 @@ class FPRENApp(tk.Tk):
             self._populate_playlist(playlist)
         if isinstance(icecast, list) and icecast:
             self._populate_icecast(icecast)
+            self._populate_stream_control(icecast)
         if isinstance(data_tab, dict) and not data_tab.get("_error"):
             self._populate_data(data_tab)
 
     def _schedule_refresh(self):
         self._refresh()
-        self.after(REFRESH_SEC * 1000, self._schedule_refresh)
+        self._after_id = self.after(REFRESH_SEC * 1000, self._schedule_refresh)
 
 
     # ══════════════════════════════════════════ AI BROADCAST TAB
@@ -1267,6 +1539,248 @@ class FPRENApp(tk.Tk):
                     self._ai_bc_out.insert("1.0", res.get("script", ""))
                 else:
                     self._ai_bc_status.set(f"Error: {res.get('message', res.get('_error',''))}")
+            self.after(0, update)
+        threading.Thread(target=task, daemon=True).start()
+
+
+    # ══════════════════════════════════════════ STREAM NOTIFICATIONS TAB
+    NOTIFY_CONFIG = "/home/ufuser/Fpren-main/stream_notify_config.json"
+    NOTIFY_LOG    = "/home/ufuser/Fpren-main/logs/stream_notifications.log"
+    STATE_FILE    = "/home/ufuser/Fpren-main/logs/stream_state.txt"
+
+    def _build_stream_notify_tab(self):
+        import json, socket as _sock
+        f = self.tab_stream_notify
+        f.configure(style="TFrame")
+
+        canvas = tk.Canvas(f, bg="#f8f9fa", highlightthickness=0)
+        scroll = ttk.Scrollbar(f, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(fill="both", expand=True)
+        inner = tk.Frame(canvas, bg="#f8f9fa")
+        inner.bind("<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        tk.Label(inner, text="Stream Notifications",
+                 font=("Arial", 13, "bold"), bg="#f8f9fa").pack(
+            anchor="w", padx=20, pady=(15, 2))
+        tk.Label(inner, text="Icecast stream (port 8000) monitoring and alerts",
+                 font=("Arial", 9), fg="#6c757d", bg="#f8f9fa").pack(
+            anchor="w", padx=20, pady=(0, 10))
+
+        # ── Status row ──────────────────────────────────────────────────
+        status_frame = tk.LabelFrame(inner, text="  Stream Status  ",
+                                     font=("Arial", 10, "bold"),
+                                     bg="white", relief="solid", bd=1)
+        status_frame.pack(fill="x", padx=20, pady=(0, 10))
+
+        self._sn_status_var = tk.StringVar(value="Checking…")
+        self._sn_status_lbl = tk.Label(status_frame,
+            textvariable=self._sn_status_var,
+            font=("Arial", 12, "bold"), bg="white", fg="#6c757d")
+        self._sn_status_lbl.pack(side="left", padx=15, pady=8)
+
+        tk.Button(status_frame, text="Check Now",
+                  command=self._sn_check_status,
+                  bg="#0d6efd", fg="white", font=("Arial", 9),
+                  relief="flat", padx=10).pack(side="right", padx=10, pady=8)
+
+        # ── Settings ────────────────────────────────────────────────────
+        cfg_frame = tk.LabelFrame(inner, text="  Notification Settings  ",
+                                  font=("Arial", 10, "bold"),
+                                  bg="white", relief="solid", bd=1)
+        cfg_frame.pack(fill="x", padx=20, pady=(0, 10))
+
+        tk.Label(cfg_frame, text="Alert me via:",
+                 font=("Arial", 9, "bold"), bg="white").pack(
+            anchor="w", padx=12, pady=(10, 4))
+
+        chk_row = tk.Frame(cfg_frame, bg="white")
+        chk_row.pack(anchor="w", padx=12)
+        self._sn_email_var = tk.BooleanVar()
+        self._sn_sms_var   = tk.BooleanVar()
+        self._sn_phone_var = tk.BooleanVar()
+        tk.Checkbutton(chk_row, text="Email",      variable=self._sn_email_var,
+                       bg="white", font=("Arial", 10),
+                       command=self._sn_toggle_fields).pack(side="left", padx=(0, 12))
+        tk.Checkbutton(chk_row, text="SMS Text",   variable=self._sn_sms_var,
+                       bg="white", font=("Arial", 10),
+                       command=self._sn_toggle_fields).pack(side="left", padx=(0, 12))
+        tk.Checkbutton(chk_row, text="Phone Call", variable=self._sn_phone_var,
+                       bg="white", font=("Arial", 10),
+                       command=self._sn_toggle_fields).pack(side="left")
+
+        def _field(parent, label, attr, show=""):
+            row = tk.Frame(parent, bg="white")
+            row.pack(fill="x", padx=12, pady=3)
+            tk.Label(row, text=label, font=("Arial", 9), bg="white",
+                     width=22, anchor="w").pack(side="left")
+            v = tk.StringVar()
+            setattr(self, attr, v)
+            e = tk.Entry(row, textvariable=v, font=("Arial", 10),
+                         relief="solid", bd=1, show=show)
+            e.pack(side="left", fill="x", expand=True)
+            return row
+
+        tk.Label(cfg_frame, text="", bg="white").pack()
+        self._sn_email_row  = _field(cfg_frame, "Email Address:",       "_sn_email_v")
+        self._sn_phone_row  = _field(cfg_frame, "Phone (E.164):",       "_sn_phone_v")
+        self._sn_sid_row    = _field(cfg_frame, "Twilio Account SID:",  "_sn_sid_v")
+        self._sn_token_row  = _field(cfg_frame, "Twilio Auth Token:",   "_sn_token_v", show="*")
+        self._sn_from_row   = _field(cfg_frame, "Twilio From Number:",  "_sn_from_v")
+
+        sep = tk.Frame(cfg_frame, bg="#dee2e6", height=1)
+        sep.pack(fill="x", padx=12, pady=8)
+
+        self._sn_offline_var = tk.BooleanVar(value=True)
+        self._sn_reboot_var  = tk.BooleanVar(value=True)
+        tk.Checkbutton(cfg_frame, text="Notify when stream goes offline",
+                       variable=self._sn_offline_var,
+                       bg="white", font=("Arial", 10)).pack(
+            anchor="w", padx=12, pady=2)
+        tk.Checkbutton(cfg_frame, text="Notify on server reboot",
+                       variable=self._sn_reboot_var,
+                       bg="white", font=("Arial", 10)).pack(
+            anchor="w", padx=12, pady=2)
+
+        btn_row = tk.Frame(cfg_frame, bg="white")
+        btn_row.pack(fill="x", padx=12, pady=10)
+        tk.Button(btn_row, text="Save Settings",
+                  command=self._sn_save_config,
+                  bg="#198754", fg="white", font=("Arial", 9),
+                  relief="flat", padx=12, pady=4).pack(side="left", padx=(0, 8))
+        tk.Button(btn_row, text="Send Test Notification",
+                  command=self._sn_test_notify,
+                  bg="#6c757d", fg="white", font=("Arial", 9),
+                  relief="flat", padx=12, pady=4).pack(side="left")
+
+        self._sn_cfg_status = tk.StringVar(value="")
+        tk.Label(cfg_frame, textvariable=self._sn_cfg_status,
+                 font=("Arial", 9), fg="#0077aa", bg="white").pack(
+            anchor="w", padx=12, pady=(0, 8))
+
+        # ── Recent notifications log ─────────────────────────────────────
+        log_frame = tk.LabelFrame(inner, text="  Recent Notifications  ",
+                                  font=("Arial", 10, "bold"),
+                                  bg="white", relief="solid", bd=1)
+        log_frame.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+
+        self._sn_log_text = tk.Text(log_frame, height=10, font=("Courier", 9),
+                                    bg="#1e1e1e", fg="#c8c8c8",
+                                    relief="flat", state="disabled")
+        self._sn_log_text.pack(fill="both", expand=True, padx=8, pady=8)
+
+        tk.Button(log_frame, text="Refresh Log",
+                  command=self._sn_refresh_log,
+                  bg="#0d6efd", fg="white", font=("Arial", 9),
+                  relief="flat", padx=10).pack(anchor="e", padx=8, pady=(0, 8))
+
+        # Load saved config into fields
+        self.after(200, self._sn_load_config)
+        self.after(400, self._sn_check_status)
+        self.after(600, self._sn_refresh_log)
+
+    def _sn_toggle_fields(self):
+        sms_or_phone = self._sn_sms_var.get() or self._sn_phone_var.get()
+        for row in (self._sn_email_row,):
+            for w in row.winfo_children():
+                try: w.configure(state="normal" if self._sn_email_var.get() else "disabled")
+                except Exception: pass
+        for row in (self._sn_phone_row, self._sn_sid_row, self._sn_token_row, self._sn_from_row):
+            for w in row.winfo_children():
+                try: w.configure(state="normal" if sms_or_phone else "disabled")
+                except Exception: pass
+
+    def _sn_load_config(self):
+        import json
+        try:
+            with open(self.NOTIFY_CONFIG) as fh:
+                cfg = json.load(fh)
+        except Exception:
+            return
+        methods = cfg.get("notify_methods", [])
+        self._sn_email_var.set("email" in methods)
+        self._sn_sms_var.set("sms" in methods)
+        self._sn_phone_var.set("phone" in methods)
+        self._sn_email_v.set(cfg.get("email", ""))
+        self._sn_phone_v.set(cfg.get("phone", ""))
+        self._sn_sid_v.set(cfg.get("twilio_sid", ""))
+        self._sn_token_v.set(cfg.get("twilio_token", ""))
+        self._sn_from_v.set(cfg.get("twilio_from", ""))
+        self._sn_offline_var.set(bool(cfg.get("notify_on_offline", True)))
+        self._sn_reboot_var.set(bool(cfg.get("notify_on_reboot", True)))
+        self._sn_toggle_fields()
+
+    def _sn_save_config(self):
+        import json
+        methods = []
+        if self._sn_email_var.get():  methods.append("email")
+        if self._sn_sms_var.get():    methods.append("sms")
+        if self._sn_phone_var.get():  methods.append("phone")
+        cfg = {
+            "notify_methods":    methods,
+            "email":             self._sn_email_v.get().strip(),
+            "phone":             self._sn_phone_v.get().strip(),
+            "twilio_sid":        self._sn_sid_v.get().strip(),
+            "twilio_token":      self._sn_token_v.get().strip(),
+            "twilio_from":       self._sn_from_v.get().strip(),
+            "notify_on_offline": self._sn_offline_var.get(),
+            "notify_on_reboot":  self._sn_reboot_var.get(),
+        }
+        try:
+            with open(self.NOTIFY_CONFIG, "w") as fh:
+                json.dump(cfg, fh, indent=2)
+            self._sn_cfg_status.set(f"Saved at {datetime.now().strftime('%H:%M:%S')}")
+        except Exception as e:
+            self._sn_cfg_status.set(f"Error: {e}")
+
+    def _sn_check_status(self):
+        def task():
+            try:
+                import socket as _s
+                with _s.create_connection(("127.0.0.1", 8000), timeout=3):
+                    status, color = "ONLINE", "#198754"
+            except Exception:
+                status, color = "OFFLINE", "#dc3545"
+            def update():
+                self._sn_status_var.set(f"Icecast Stream (port 8000): {status}")
+                self._sn_status_lbl.configure(fg=color)
+            self.after(0, update)
+        threading.Thread(target=task, daemon=True).start()
+
+    def _sn_test_notify(self):
+        import subprocess, sys
+        self._sn_cfg_status.set("Sending test notification…")
+        def task():
+            try:
+                subprocess.run(
+                    [sys.executable,
+                     "/home/ufuser/Fpren-main/scripts/stream_notify.py", "offline"],
+                    timeout=30, capture_output=True
+                )
+                msg = "Test sent — check email/SMS/phone."
+            except Exception as e:
+                msg = f"Error: {e}"
+            self.after(0, lambda: self._sn_cfg_status.set(msg))
+        threading.Thread(target=task, daemon=True).start()
+
+    def _sn_refresh_log(self):
+        def task():
+            try:
+                with open(self.NOTIFY_LOG) as fh:
+                    lines = fh.readlines()[-20:]
+                content = "".join(reversed(lines))
+            except FileNotFoundError:
+                content = "No notifications logged yet."
+            except Exception as e:
+                content = f"Error reading log: {e}"
+            def update():
+                self._sn_log_text.configure(state="normal")
+                self._sn_log_text.delete("1.0", "end")
+                self._sn_log_text.insert("1.0", content)
+                self._sn_log_text.configure(state="disabled")
             self.after(0, update)
         threading.Thread(target=task, daemon=True).start()
 

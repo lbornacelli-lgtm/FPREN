@@ -453,5 +453,26 @@ def main():
     logger.info("zone_alert_tts stopped.")
 
 
+def run_once():
+    """Process all pending alerts and traffic once, then exit."""
+    import sys
+    tts    = TTSService()
+    client = MongoClient(MONGO_URI)
+    db     = client[DB_NAME]
+    db["zone_alert_wavs"].create_index(
+        [("source_type", 1), ("source_id", 1), ("zone", 1)], unique=True
+    )
+    zones = _load_zones(db)
+    logger.info("run_once — %d zones loaded", len(zones))
+    process_nws_alerts(db, zones, tts)
+    process_traffic(db, zones, tts)
+    client.close()
+    logger.info("run_once complete.")
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--once" in sys.argv:
+        run_once()
+    else:
+        main()

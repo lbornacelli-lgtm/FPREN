@@ -49,5 +49,5 @@ class TTSService:
                     if os.path.exists(tmp_path):
                         os.unlink(tmp_path)
         except Exception as e:
-            logger.exception("TTS error: %s", e)
-        return None
+            logger.error("TTS error: %s", e)
+            raise

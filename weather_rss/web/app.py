@@ -1,8 +1,9 @@
 import json
 import os
+import re
 import time as _time
 import urllib.request as _ureq
-from flask import Flask, jsonify, redirect, render_template_string, request, send_from_directory, url_for
+from flask import Flask, abort, jsonify, redirect, render_template_string, request, send_file, send_from_directory, url_for
 from pymongo import MongoClient
 from datetime import datetime, timezone
 
@@ -189,10 +190,11 @@ app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 status_col       = db[COLLECTION]
-alerts_col       = db["nws_alerts"]
+alerts_col        = db["nws_alerts"]
+zone_wavs_col     = db["zone_alert_wavs"]
 airport_metar_col = db["airport_metar"]
-fl_traffic_col   = db["fl_traffic"]
-school_col       = db["school_closings"]
+fl_traffic_col    = db["fl_traffic"]
+school_col        = db["school_closings"]
 
 # -------------------- TEMPLATE ------------------
 HTML_TEMPLATE = """
@@ -256,6 +258,22 @@ HTML_TEMPLATE = """
     padding:1px 7px; font-size:0.78rem; font-family:monospace;
   }
   .cfg-note { font-size:0.78rem; color:#888; margin-top:10px; font-style:italic; }
+
+  /* ---- Stream Control card ---- */
+  .sc-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; vertical-align:middle; }
+  .sc-dot.live { background:#2e7d32; }
+  .sc-dot.offline { background:#c62828; }
+  .btn-sc-stop  { padding:5px 12px; background:#c62828; color:#fff; border:none;
+    border-radius:4px; font-size:0.82rem; font-weight:700; cursor:pointer; }
+  .btn-sc-stop:hover  { background:#b71c1c; }
+  .btn-sc-start { padding:5px 12px; background:#2e7d32; color:#fff; border:none;
+    border-radius:4px; font-size:0.82rem; font-weight:700; cursor:pointer; }
+  .btn-sc-start:hover { background:#1b5e20; }
+  .btn-sc-restart { padding:7px 16px; background:#0077aa; color:#fff; border:none;
+    border-radius:4px; font-size:0.875rem; font-weight:700; cursor:pointer; }
+  .btn-sc-restart:hover { background:#005f8a; }
+  .sc-status-row { display:flex; align-items:center; gap:10px; margin-top:12px; flex-wrap:wrap; }
+  .sc-engine-msg { font-size:0.8rem; color:#666; font-style:italic; }
 
   /* ---- SMTP card ---- */
   .smtp-grid { display:grid; grid-template-columns:2fr 1fr 2fr 2fr; gap:10px 16px; align-items:end; }
@@ -438,6 +456,24 @@ HTML_TEMPLATE = """
     <p class="cfg-note">Zone changes persist across restarts and are picked up immediately by the broadcast engine.</p>
   </div>
 
+  <!-- Stream Control card -->
+  <div class="cfg-card">
+    <h2>Stream Control</h2>
+    <table class="cfg-table">
+      <thead>
+        <tr><th>Stream</th><th>Port</th><th>Mount</th><th>Status</th><th>Action</th></tr>
+      </thead>
+      <tbody id="sc-rows">
+        <tr><td colspan="5" style="color:#aaa;text-align:center;padding:18px;">Loading&hellip;</td></tr>
+      </tbody>
+    </table>
+    <div class="sc-status-row">
+      <button class="btn-sc-restart" onclick="scRestartEngine()">&#x21BA; Restart Broadcast Engine</button>
+      <span id="sc-engine-msg" class="sc-engine-msg"></span>
+    </div>
+    <p class="cfg-note">Stop kills the audio source for that mount point. Restart Engine reconnects all stream sources via the broadcast engine service.</p>
+  </div>
+
   <!-- SMTP Settings card -->
   <div class="cfg-card">
     <h2>Email / SMTP Settings</h2>
@@ -504,6 +540,7 @@ HTML_TEMPLATE = """
 <div id="tab-icecast" class="tab-panel">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap;">
     <button class="btn-smtp-test" onclick="testStreamAlert()">&#128276; Test Port 8000 Alert Email</button>
+    <button class="btn-smtp-save" onclick="refreshIcecast()">&#x21BA; Refresh</button>
     <span id="ice-alert-status" class="smtp-status"></span>
   </div>
   <div id="ice-load" style="text-align:center;padding:40px;color:#888;font-size:1rem;">Click the Icecast tab to load stream status&hellip;</div>
@@ -538,6 +575,33 @@ HTML_TEMPLATE = """
   <div id="data-content">
     <div style="text-align:center;padding:40px;color:#888;">Loading data...</div>
   </div>
+
+  <div style="margin-top:24px;">
+    <!-- Transcode panel -->
+    <div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:14px 18px;margin-bottom:18px;max-width:860px;">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <strong style="font-size:0.95rem;color:#0077aa;">&#127908; Alert Transcoding</strong>
+        <span id="tc-status" style="font-size:0.82rem;color:#666;"></span>
+        <button class="btn-smtp-save" onclick="tcRunNow()" id="tc-btn" style="margin-left:auto;">&#9654; Transcode Now</button>
+        <button class="btn-smtp-test" onclick="tcRefreshStatus()" style="padding:7px 12px;">&#x21BA;</button>
+      </div>
+      <div id="tc-counts" style="margin-top:8px;font-size:0.82rem;color:#555;"></div>
+    </div>
+
+    <!-- Audio library -->
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:8px;">
+      <h2 style="margin:0;">Alert Audio Library</h2>
+      <span id="za-total" style="font-size:0.82rem;color:#666;"></span>
+      <label style="font-size:0.82rem;font-weight:600;display:flex;align-items:center;gap:6px;">
+        Zone:
+        <select id="za-zone-sel" class="zone-select" style="min-width:150px;"
+                onchange="loadZoneAudio(1, this.value)">
+          <option value="all_florida">all florida</option>
+        </select>
+      </label>
+    </div>
+    <div id="za-container"><div style="color:#888;padding:20px 0;">Loading audio library&hellip;</div></div>
+  </div>
 </div><!-- end tab-data -->
 
 <div id="toast"></div>
@@ -564,6 +628,7 @@ function showTab(name, btn) {
   if (name === 'icecast')  loadIcecast();
   if (name === 'data')     loadDataTab();
   if (name === 'reports')  loadReports();
+  if (name === 'config')   loadStreamControl();
 }
 
 function toast(msg, ok=true) {
@@ -626,6 +691,7 @@ function saveZone(streamId) {
 
 loadConfig();
 loadSmtp();
+loadStreamControl();
 
 // Restore last active tab and start auto-refresh
 (function() {
@@ -649,6 +715,62 @@ loadSmtp();
   setInterval(loadPlaylist,  60000);   // playlist: every 60s
   setInterval(loadWeather,  600000);   // weather: every 10 min
 })();
+
+// ---- Stream Control ----
+function loadStreamControl() {
+  fetch('/api/icecast')
+    .then(r => r.json())
+    .then(streams => {
+      document.getElementById('sc-rows').innerHTML = streams.map(s => {
+        const dot = s.live
+          ? '<span class="sc-dot live"></span>Live'
+          : '<span class="sc-dot offline"></span>Offline';
+        const btn = s.live
+          ? `<button class="btn-sc-stop"  onclick="scStop('${s.id}','${s.mount}')">Stop</button>`
+          : `<button class="btn-sc-start" onclick="scStart()">Start</button>`;
+        return `<tr>
+          <td><strong>${s.label}</strong></td>
+          <td><span class="port-tag">:${s.port}</span></td>
+          <td><code>${s.mount}</code></td>
+          <td>${dot}</td>
+          <td>${btn}</td>
+        </tr>`;
+      }).join('');
+    })
+    .catch(() => {
+      document.getElementById('sc-rows').innerHTML =
+        '<tr><td colspan="5" style="color:#c62828;text-align:center;">Failed to load stream status</td></tr>';
+    });
+}
+
+function scStop(streamId, mount) {
+  if (!confirm('Stop audio source for ' + mount + '?')) return;
+  fetch('/api/streams/' + streamId + '/stop', {method: 'POST'})
+    .then(r => r.json())
+    .then(d => { toast(d.message || (d.ok ? 'Stopped' : 'Error'), d.ok); loadStreamControl(); })
+    .catch(() => toast('Request failed', false));
+}
+
+function scStart() {
+  fetch('/api/streams/start-engine', {method: 'POST'})
+    .then(r => r.json())
+    .then(d => { toast(d.message || (d.ok ? 'Starting\u2026' : 'Error'), d.ok); setTimeout(loadStreamControl, 4000); })
+    .catch(() => toast('Request failed', false));
+}
+
+function scRestartEngine() {
+  if (!confirm('Restart the broadcast engine? All streams will reconnect in a few seconds.')) return;
+  const msg = document.getElementById('sc-engine-msg');
+  msg.textContent = 'Restarting\u2026';
+  fetch('/api/streams/restart-engine', {method: 'POST'})
+    .then(r => r.json())
+    .then(d => {
+      toast(d.message || (d.ok ? 'Engine restarting' : 'Error'), d.ok);
+      msg.textContent = d.message || '';
+      setTimeout(() => { msg.textContent = ''; loadStreamControl(); }, 5000);
+    })
+    .catch(() => { toast('Request failed', false); msg.textContent = ''; });
+}
 
 // ---- SMTP ----
 function loadSmtp() {
@@ -801,6 +923,11 @@ function testStreamAlert() {
 }
 
 // ---- Icecast ----
+function refreshIcecast() {
+  _tabLoaded['icecast'] = 0;
+  loadIcecast();
+}
+
 function loadIcecast() {
   if (!_isStale('icecast')) return;
   _markLoaded('icecast');
@@ -910,16 +1037,15 @@ function loadDataTab() {
 
       // NWS Alerts
       html += `<h2>NWS Alerts <small>(${d.alerts.length} most recent)</small></h2>
-        <table><tr><th>Event</th><th>Headline</th><th>Severity</th><th>Areas</th><th>Sender</th><th>Sent</th><th>WAV</th></tr>`;
+        <table><tr><th>Event</th><th>Headline</th><th>Severity</th><th>Areas</th><th>Sender</th><th>Sent</th><th>Audio</th></tr>`;
       if (d.alerts.length) {
         d.alerts.forEach(a => {
-          const wav = a.tts_generated && a.alert_id
-            ? `<a href="/alerts/${a.alert_id}/wav" download class="badge badge-yes" style="text-decoration:none;">&#8681; WAV</a>`
-            : a.tts_generated ? `<span class="badge badge-yes">&#10003; WAV</span>`
+          const audio = a.audio_id
+            ? `<a href="/audio/download/${a.audio_id}" download class="badge badge-yes" style="text-decoration:none;">&#8681; ${a.audio_ext||'MP3'}</a>`
             : `<span class="badge badge-no">Pending</span>`;
           html += `<tr class="${a.sev_class}"><td><strong>${a.event}</strong></td><td>${a.headline}</td>
             <td class="center">${a.severity}</td><td>${a.area_desc}</td><td>${a.sender}</td>
-            <td class="center">${a.sent}</td><td class="center">${wav}</td></tr>`;
+            <td class="center">${a.sent}</td><td class="center">${audio}</td></tr>`;
         });
       } else {
         html += `<tr><td colspan="7" class="no-data">No alerts in database</td></tr>`;
@@ -986,10 +1112,106 @@ function loadDataTab() {
       html += '</table>';
 
       document.getElementById('data-content').innerHTML = html;
+      tcRefreshStatus();
+      loadZoneAudio(1, document.getElementById('za-zone-sel') ? document.getElementById('za-zone-sel').value : 'all_florida');
     })
     .catch(() => {
       document.getElementById('data-refreshed').textContent = 'Failed to load — retrying...';
       _tabLoaded['data'] = 0;  // allow immediate retry
+    });
+}
+
+// ---- Transcode ----
+let _tcPollTimer = null;
+
+function tcRefreshStatus() {
+  fetch('/api/transcode/status')
+    .then(r => r.json())
+    .then(d => {
+      document.getElementById('tc-counts').innerHTML =
+        `Alerts: <strong>${d.total_alerts}</strong> total &nbsp;|&nbsp; `+
+        `Missing audio: <strong style="color:${d.missing_alerts>0?'#c62828':'#2e7d32'}">${d.missing_alerts}</strong> `+
+        `&nbsp;|&nbsp; Traffic: <strong>${d.total_traffic}</strong> total &nbsp;|&nbsp; `+
+        `Missing audio: <strong style="color:${d.missing_traffic>0?'#c62828':'#2e7d32'}">${d.missing_traffic}</strong>`;
+      const btn = document.getElementById('tc-btn');
+      const st  = document.getElementById('tc-status');
+      if (d.running) {
+        btn.disabled = true;
+        st.textContent = 'Transcoding in progress\u2026';
+        st.style.color = '#0077aa';
+        if (!_tcPollTimer) _tcPollTimer = setInterval(tcRefreshStatus, 4000);
+      } else {
+        btn.disabled = false;
+        st.textContent = d.missing_alerts === 0 && d.missing_traffic === 0 ? 'All alerts have audio' : '';
+        st.style.color = '#2e7d32';
+        if (_tcPollTimer) { clearInterval(_tcPollTimer); _tcPollTimer = null; }
+      }
+    });
+}
+
+function tcRunNow() {
+  document.getElementById('tc-btn').disabled = true;
+  document.getElementById('tc-status').textContent = 'Starting\u2026';
+  fetch('/api/transcode/run', {method: 'POST'})
+    .then(r => r.json())
+    .then(d => {
+      document.getElementById('tc-status').textContent = d.message;
+      document.getElementById('tc-status').style.color = d.ok ? '#0077aa' : '#c62828';
+      if (d.ok) {
+        if (_tcPollTimer) clearInterval(_tcPollTimer);
+        _tcPollTimer = setInterval(tcRefreshStatus, 4000);
+      } else {
+        document.getElementById('tc-btn').disabled = false;
+      }
+    })
+    .catch(() => {
+      document.getElementById('tc-status').textContent = 'Request failed';
+      document.getElementById('tc-btn').disabled = false;
+    });
+}
+
+// ---- Alert Audio Library ----
+function loadZoneAudio(page, zone) {
+  page = page || 1;
+  zone = zone || 'all_florida';
+  fetch(`/api/zone-audio?zone=${encodeURIComponent(zone)}&page=${page}`)
+    .then(r => r.json())
+    .then(d => {
+      const container = document.getElementById('za-container');
+      if (!container) return;
+      const totalPages = Math.ceil(d.total / d.limit);
+      // Populate zone selector if first load
+      const sel = document.getElementById('za-zone-sel');
+      if (sel && sel.options.length <= 1) {
+        d.zones.forEach(z => {
+          const opt = document.createElement('option');
+          opt.value = z; opt.textContent = z.replace(/_/g,' ');
+          if (z === zone) opt.selected = true;
+          sel.appendChild(opt);
+        });
+      }
+      document.getElementById('za-total').textContent = `${d.total.toLocaleString()} files`;
+      const rows = d.items.map(f => {
+        const dl = f.exists
+          ? `<a href="/audio/download/${f.id}" download class="badge badge-yes" style="text-decoration:none;">&#8681; ${f.ext}</a>`
+          : `<span class="badge badge-no">Missing</span>`;
+        return `<tr><td><strong>${f.event}</strong></td><td>${f.alert_folder}</td>
+          <td>${f.area_desc}</td><td class="center">${f.severity}</td>
+          <td class="center">${f.generated_at}</td><td class="center">${dl}</td></tr>`;
+      }).join('');
+      container.innerHTML = `<table>
+        <tr><th>Event</th><th>Category</th><th>Areas</th><th>Severity</th><th>Generated</th><th>Download</th></tr>
+        ${rows || '<tr><td colspan="6" class="no-data">No audio files found</td></tr>'}
+      </table>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+        ${page > 1 ? `<button class="btn-smtp-save" onclick="loadZoneAudio(${page-1}, document.getElementById('za-zone-sel').value)" style="padding:4px 12px;font-size:0.8rem;">&#8249; Prev</button>` : ''}
+        <span style="font-size:0.8rem;color:#666;">Page ${page} of ${totalPages}</span>
+        ${page < totalPages ? `<button class="btn-smtp-save" onclick="loadZoneAudio(${page+1}, document.getElementById('za-zone-sel').value)" style="padding:4px 12px;font-size:0.8rem;">Next &#8250;</button>` : ''}
+      </div>`;
+    })
+    .catch(() => {
+      const c = document.getElementById('za-container');
+      if (c) c.innerHTML = '<p style="color:#c62828;">Failed to load audio library.</p>';
     });
 }
 
@@ -1242,6 +1464,60 @@ def api_stream_zone(stream_id):
     _save_zone_overrides(overrides)
     return jsonify({"ok": True, "message": f"Zone set to {zone}"})
 
+@app.route("/api/streams/<stream_id>/stop", methods=["POST"])
+def api_stream_stop(stream_id):
+    import base64, urllib.error
+    stream = next((s for s in STREAMS if s["id"] == stream_id), None)
+    if not stream:
+        return jsonify({"ok": False, "message": "Unknown stream"}), 404
+    mount = stream["mount"]
+    try:
+        url = f"http://localhost:8000/admin/killsource?mount={mount}"
+        req = _ureq.Request(url)
+        req.add_header("Authorization",
+                       "Basic " + base64.b64encode(b"admin:hackme").decode())
+        with _ureq.urlopen(req, timeout=5) as resp:
+            resp.read()
+        return jsonify({"ok": True, "message": f"Source for {mount} stopped"})
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        if "client not found" in body.lower():
+            return jsonify({"ok": False, "message": f"{mount} has no active source — already offline?"})
+        return jsonify({"ok": False, "message": f"Icecast error {e.code}: {body[:120]}"}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@app.route("/api/streams/start-engine", methods=["POST"])
+def api_stream_start_engine():
+    import subprocess
+    try:
+        # Ensure Icecast is up first
+        subprocess.run(["sudo", "systemctl", "start", "icecast2"],
+                       capture_output=True, text=True, timeout=10)
+        result = subprocess.run(
+            ["sudo", "systemctl", "start", "beacon-station-engine"],
+            capture_output=True, text=True, timeout=20
+        )
+        if result.returncode == 0:
+            return jsonify({"ok": True, "message": "Broadcast engine starting\u2026"})
+        return jsonify({"ok": False, "message": result.stderr.strip() or "Start failed"}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@app.route("/api/streams/restart-engine", methods=["POST"])
+def api_stream_restart_engine():
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["sudo", "systemctl", "restart", "beacon-station-engine"],
+            capture_output=True, text=True, timeout=20
+        )
+        if result.returncode == 0:
+            return jsonify({"ok": True, "message": "Broadcast engine restarting\u2026"})
+        return jsonify({"ok": False, "message": result.stderr.strip() or "Restart failed"}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
 # -------------------- SMTP CONFIG API ------------------
 @app.route("/api/smtp", methods=["GET"])
 def api_smtp_get():
@@ -1380,7 +1656,7 @@ def api_icecast():
             "bitrate": None, "format": None, "title": None,
         }
         try:
-            url = f"http://localhost:{s['port']}/admin/stats"
+            url = "http://localhost:8000/admin/stats"
             req = _ureq.Request(url)
             import base64
             creds = base64.b64encode(b"admin:hackme").decode()
@@ -1391,9 +1667,16 @@ def api_icecast():
                 if src.get("mount") == s["mount"]:
                     entry["live"]      = True
                     entry["listeners"] = int(src.findtext("listeners") or 0)
-                    entry["bitrate"]   = src.findtext("bitrate")
                     entry["format"]    = src.findtext("server_type")
                     entry["title"]     = src.findtext("title") or src.findtext("server_name")
+                    bitrate = src.findtext("bitrate")
+                    if not bitrate:
+                        audio_info = src.findtext("audio_info") or ""
+                        for part in audio_info.split(";"):
+                            if "bitrate" in part.lower():
+                                bitrate = part.split("=")[-1].strip()
+                                break
+                    entry["bitrate"] = bitrate
                     break
         except Exception:
             pass
@@ -1509,52 +1792,166 @@ def api_playlist_assign():
 
 # -------------------- ALERT WAV DOWNLOAD --------
 _ALL_FLORIDA_ZONE = "/home/ufuser/Fpren-main/weather_station/audio/zones/all_florida"
-_WAV_SEARCH_ROOTS = [
-    _ALL_FLORIDA_ZONE,
+_AUDIO_SEARCH_ROOTS = [
+    "/home/ufuser/Fpren-main/weather_station/audio/zones",
+    "/home/ufuser/Fpren-main/weather_station/audio/alert_tones",
     "/home/ufuser/Fpren-main/audio_playlist/alerts",
-    "/home/ufuser/Fpren-main/weather_station/audio/alerts",
     "/home/ufuser/Fpren-main/wav_output",
 ]
 
-def _alert_id_to_filename(alert_id: str) -> str:
-    """Convert alert_id URN to WAV filename: replace : and . with _"""
-    return alert_id.replace(":", "_").replace(".", "_") + ".wav"
-
-def _resolve_wav(wav_path: str, alert_id: str = None):
-    """Return a real path for the alert WAV, searching all_florida first."""
-    candidates = []
-    # Prefer filename derived from alert_id (all_florida zone naming)
-    if alert_id:
-        candidates.append(_alert_id_to_filename(alert_id))
-    # Also try basename from wav_path
-    if wav_path:
-        candidates.append(os.path.basename(wav_path))
-    # Direct path check
+def _resolve_audio(alert_id: str = None, wav_path: str = None):
+    """Return a real filesystem path for an alert audio file (MP3 or WAV)."""
+    # 1. Direct path on disk
     if wav_path and os.path.isfile(wav_path):
         return wav_path
-    for filename in candidates:
-        for root in _WAV_SEARCH_ROOTS:
+    # 2. zone_alert_wavs lookup by source_id
+    if alert_id:
+        doc = zone_wavs_col.find_one(
+            {"source_id": alert_id, "zone": "all_florida"}) or \
+            zone_wavs_col.find_one({"source_id": alert_id})
+        if doc:
+            p = doc.get("wav_path", "")
+            if p and os.path.isfile(p):
+                return p
+    # 3. Stem search (handles both .mp3 and .wav)
+    stem = None
+    if alert_id:
+        stem = re.sub(r'[:.]', '_', alert_id)
+    elif wav_path:
+        stem = os.path.splitext(os.path.basename(wav_path))[0]
+    if stem:
+        for root in _AUDIO_SEARCH_ROOTS:
             for dirpath, _, files in os.walk(root):
-                if filename in files:
-                    return os.path.join(dirpath, filename)
+                for f in files:
+                    if os.path.splitext(f)[0] == stem and \
+                            f.endswith((".mp3", ".wav")):
+                        return os.path.join(dirpath, f)
     return None
 
-@app.route("/alerts/<alert_id>/wav")
+def _audio_mimetype(path: str) -> str:
+    return "audio/mpeg" if path.endswith(".mp3") else "audio/wav"
+
+@app.route("/alerts/<path:alert_id>/wav")
 def alert_wav(alert_id):
+    resolved = _resolve_audio(alert_id=alert_id)
+    if not resolved:
+        # Also try looking up wav_path from nws_alerts
+        doc = alerts_col.find_one({"alert_id": alert_id})
+        if doc:
+            resolved = _resolve_audio(alert_id, doc.get("wav_path"))
+    if not resolved:
+        abort(404)
+    filename = os.path.basename(resolved)
+    return send_file(resolved, mimetype=_audio_mimetype(resolved),
+                     as_attachment=True, download_name=filename)
+
+@app.route("/audio/download/<doc_id>")
+def audio_download(doc_id):
+    """Serve an audio file by zone_alert_wavs _id."""
     from bson import ObjectId
-    from flask import send_file, abort
     try:
-        doc = alerts_col.find_one({"_id": ObjectId(alert_id)})
+        doc = zone_wavs_col.find_one({"_id": ObjectId(doc_id)})
     except Exception:
         abort(400)
     if not doc:
         abort(404)
-    resolved = _resolve_wav(doc.get("wav_path"), doc.get("alert_id"))
-    if not resolved:
+    path = doc.get("wav_path", "")
+    if not path or not os.path.isfile(path):
         abort(404)
-    filename = os.path.basename(resolved)
-    return send_file(resolved, mimetype="audio/wav",
+    filename = os.path.basename(path)
+    return send_file(path, mimetype=_audio_mimetype(path),
                      as_attachment=True, download_name=filename)
+
+@app.route("/api/zone-audio")
+def api_zone_audio():
+    """List alert audio files from zone_alert_wavs, paginated."""
+    zone      = request.args.get("zone", "all_florida")
+    page      = max(1, int(request.args.get("page", 1)))
+    limit     = 50
+    skip      = (page - 1) * limit
+    query     = {"zone": zone} if zone else {}
+    total     = zone_wavs_col.count_documents(query)
+    docs      = list(zone_wavs_col.find(
+        query, sort=[("generated_at", -1)], skip=skip, limit=limit))
+    zones_all = zone_wavs_col.distinct("zone")
+    items = []
+    for d in docs:
+        path = d.get("wav_path", "")
+        gen  = d.get("generated_at")
+        items.append({
+            "id":           str(d["_id"]),
+            "event":        d.get("event", "—"),
+            "zone":         d.get("zone", ""),
+            "alert_folder": d.get("alert_folder", ""),
+            "area_desc":    d.get("area_desc", "—"),
+            "severity":     d.get("severity", "—"),
+            "generated_at": gen.strftime("%Y-%m-%d %H:%M") if hasattr(gen, "strftime") else str(gen or "—"),
+            "filename":     os.path.basename(path),
+            "ext":          os.path.splitext(path)[1].lstrip(".").upper() or "?",
+            "exists":       os.path.isfile(path),
+        })
+    return jsonify({"total": total, "page": page, "limit": limit,
+                    "zones": sorted(zones_all), "items": items})
+
+# -------------------- TRANSCODE API -------------
+_VENV_PYTHON   = "/home/ufuser/Fpren-main/venv/bin/python3"
+_PROJECT_ROOT  = "/home/ufuser/Fpren-main"
+_transcode_lock = __import__("threading").Lock()
+_transcode_running = {"pid": None}
+
+@app.route("/api/transcode/status")
+def api_transcode_status():
+    import subprocess
+    total   = alerts_col.count_documents({})
+    traffic = fl_traffic_col.count_documents({})
+    existing_ids = set(zone_wavs_col.distinct("source_id"))
+    missing_alerts  = alerts_col.count_documents(
+        {"alert_id": {"$nin": list(existing_ids)}})
+    missing_traffic = fl_traffic_col.count_documents(
+        {"incident_id": {"$nin": list(existing_ids)}})
+    # Check if a run_once process is still alive
+    pid = _transcode_running.get("pid")
+    running = False
+    if pid:
+        try:
+            running = subprocess.run(["kill", "-0", str(pid)],
+                                     capture_output=True).returncode == 0
+        except Exception:
+            pass
+    return jsonify({
+        "total_alerts":      total,
+        "total_traffic":     traffic,
+        "missing_alerts":    missing_alerts,
+        "missing_traffic":   missing_traffic,
+        "running":           running,
+    })
+
+@app.route("/api/transcode/run", methods=["POST"])
+def api_transcode_run():
+    import subprocess
+    with _transcode_lock:
+        pid = _transcode_running.get("pid")
+        if pid:
+            try:
+                alive = subprocess.run(["kill", "-0", str(pid)],
+                                       capture_output=True).returncode == 0
+            except Exception:
+                alive = False
+            if alive:
+                return jsonify({"ok": False, "message": "Transcoding already running"}), 409
+        try:
+            proc = subprocess.Popen(
+                [_VENV_PYTHON, "-m",
+                 "weather_station.services.zone_alert_tts", "--once"],
+                cwd=_PROJECT_ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            _transcode_running["pid"] = proc.pid
+            return jsonify({"ok": True,
+                            "message": f"Transcoding started (PID {proc.pid})"})
+        except Exception as e:
+            return jsonify({"ok": False, "message": str(e)}), 500
 
 # -------------------- STREAM ALERT TEST ---------
 @app.route("/api/stream-alert/test", methods=["POST"])
@@ -1602,9 +1999,19 @@ def api_data_tab():
             "row_class":    row_class,
         })
 
-    # NWS alerts
+    # NWS alerts — bulk-load audio docs in one query to avoid N+1
+    alert_docs = list(alerts_col.find({}, sort=[("fetched_at", -1)], limit=ALERTS_LIMIT))
+    alert_ids  = [str(a.get("alert_id", "")) for a in alert_docs if a.get("alert_id")]
+    # One query per zone preference: all_florida first, then any zone
+    wav_by_id  = {}
+    for doc in zone_wavs_col.find({"source_id": {"$in": alert_ids}}):
+        sid = doc["source_id"]
+        # Keep all_florida hit if available, otherwise keep first found
+        if sid not in wav_by_id or doc.get("zone") == "all_florida":
+            wav_by_id[sid] = doc
+
     alerts = []
-    for a in alerts_col.find({}, sort=[("fetched_at", -1)], limit=ALERTS_LIMIT):
+    for a in alert_docs:
         sent = a.get("sent", "")
         if isinstance(sent, datetime):
             sent = sent.strftime("%Y-%m-%d %H:%M")
@@ -1613,8 +2020,10 @@ def api_data_tab():
                 sent = datetime.fromisoformat(sent).strftime("%Y-%m-%d %H:%M")
             except ValueError:
                 pass
-        severity = a.get("severity", "")
-        alert_id = str(a.get("alert_id", "")) if a.get("wav_path") else None
+        severity  = a.get("severity", "")
+        nws_id    = str(a.get("alert_id", ""))
+        audio_doc = wav_by_id.get(nws_id)
+        audio_id  = str(audio_doc["_id"]) if audio_doc else None
         alerts.append({
             "event":         a.get("event", "—"),
             "headline":      a.get("headline", "—"),
@@ -1622,9 +2031,10 @@ def api_data_tab():
             "area_desc":     a.get("area_desc", "—"),
             "sender":        a.get("sender", "—"),
             "sent":          sent or "—",
-            "tts_generated": a.get("tts_generated", False),
+            "tts_generated": bool(audio_doc),
             "sev_class":     SEVERITY_CLASS.get(severity, ""),
-            "alert_id":      alert_id,
+            "audio_id":      audio_id,
+            "audio_ext":     os.path.splitext(audio_doc.get("wav_path", ""))[1].lstrip(".").upper() if audio_doc else None,
         })
 
     # Airport METAR

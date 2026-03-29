@@ -108,6 +108,7 @@ class IcecastStreamer:
             "-ice_name", "Beacon - All Florida",
             "-ice_description", "This is a stream of the Beacon Emergency Alerting System.",
             "-ice_genre", "FPREN",
+            "-ice_bitrate", "128",
             self._icecast_url(),
         ]
         self._ffmpeg = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)

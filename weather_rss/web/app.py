@@ -555,6 +555,22 @@ HTML_TEMPLATE = """
   </div>
 </div>
 
+  <div class="cfg-card">
+    <h2>User Management</h2>
+    <table class="cfg-table"><thead><tr><th>Username</th><th>Role</th><th>Actions</th></tr></thead>
+    <tbody id="users-tbody"><tr><td colspan="3" style="color:#aaa;text-align:center;padding:18px;">Loading...</td></tr></tbody></table>
+    <div style="margin-top:16px;border-top:1px solid #e9ecef;padding-top:16px;">
+      <h3 style="margin-bottom:12px;font-size:1rem;">Add New User</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;">
+        <label style="font-size:0.85rem;">Username<br><input id="new-username" class="smtp-input" type="text" placeholder="username"></label>
+        <label style="font-size:0.85rem;">Password<br><input id="new-password" class="smtp-input" type="password" placeholder="password"></label>
+        <label style="font-size:0.85rem;">Role<br><select id="new-role" class="smtp-input"><option value="admin">Admin</option><option value="operator">Operator</option><option value="viewer" selected>Viewer</option></select></label>
+        <div style="display:flex;align-items:flex-end;"><button class="btn-smtp-save" onclick="addUser()">Add User</button></div>
+      </div>
+      <span id="user-status" style="font-size:0.85rem;margin-top:8px;display:block;"></span>
+    </div>
+    <p class="cfg-note">Admins have full access. Operators can upload content. Viewers are read-only.</p>
+  </div>
 <!-- ===== PLAYLIST TAB ===== -->
 <div id="tab-playlist" class="tab-panel">
   <div id="pl-load" style="text-align:center;padding:40px;color:#888;font-size:1rem;">Click the Playlist tab to load&hellip;</div>
@@ -1090,6 +1106,61 @@ function deleteUpload(folder, filename) {
       .then(function(r) { return r.json(); })
       .then(function(d) { toast(d.message, d.ok); if(d.ok) loadUploadList(); });
   }
+}
+
+
+function loadUsers() {
+  fetch('/api/users')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var tbody = document.getElementById('users-tbody');
+      if (!d.users || !d.users.length) {
+        tbody.innerHTML = '<tr><td colspan="3" style="color:#aaa;text-align:center;padding:18px;">No users found</td></tr>';
+        return;
+      }
+      tbody.innerHTML = d.users.map(function(u) {
+        var isMe = u.username === '' + (typeof currentUsername !== 'undefined' ? currentUsername : '') + '';
+        return '<tr>' +
+          '<td style="padding:8px;">' + u.username + (isMe ? ' <span style="color:#0077aa;font-size:0.8rem;">(you)</span>' : '') + '</td>' +
+          '<td style="padding:8px;">' + u.role + '</td>' +
+          '<td style="padding:8px;">' +
+            '<button onclick="resetPassword('' + u.username + '')" style="font-size:0.8rem;padding:3px 8px;margin-right:4px;border:1px solid #ccc;border-radius:3px;cursor:pointer;">Reset PW</button>' +
+            (!isMe ? '<button onclick="deleteUser('' + u.username + '')" style="font-size:0.8rem;padding:3px 8px;border:1px solid #fcc;border-radius:3px;cursor:pointer;color:red;">Delete</button>' : '') +
+          '</td></tr>';
+      }).join('');
+    })
+    .catch(function() { toast('Failed to load users', false); });
+}
+function addUser() {
+  var username = document.getElementById('new-username').value.trim();
+  var password = document.getElementById('new-password').value.trim();
+  var role = document.getElementById('new-role').value;
+  var status = document.getElementById('user-status');
+  if (!username || !password) { status.style.color='red'; status.textContent='Username and password required'; return; }
+  fetch('/api/users/add', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:username, password:password, role:role})})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      status.style.color = d.ok ? 'green' : 'red';
+      status.textContent = d.message;
+      if (d.ok) {
+        document.getElementById('new-username').value = '';
+        document.getElementById('new-password').value = '';
+        loadUsers();
+      }
+    });
+}
+function deleteUser(username) {
+  if (!confirm('Delete user ' + username + '?')) return;
+  fetch('/api/users/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:username})})
+    .then(function(r) { return r.json(); })
+    .then(function(d) { toast(d.message, d.ok); if (d.ok) loadUsers(); });
+}
+function resetPassword(username) {
+  var pw = prompt('New password for ' + username + ':');
+  if (!pw) return;
+  fetch('/api/users/password', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:username, password:pw})})
+    .then(function(r) { return r.json(); })
+    .then(function(d) { toast(d.message, d.ok); });
 }
 
 function loadWeather() {

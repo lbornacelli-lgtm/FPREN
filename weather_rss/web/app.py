@@ -186,7 +186,38 @@ FLTCAT_CLASS = {
 
 # -------------------- APP -----------------------
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+import bcrypt
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+
+login_manager = LoginManager()
+login_manager.login_view = 'login_page'
+login_manager.login_message = 'Please log in to access FPREN.'
+
+class User(UserMixin):
+    def __init__(self, doc):
+        self.id       = str(doc['_id'])
+        self.username = doc['username']
+        self.role     = doc.get('role', 'viewer')
+        self.active   = doc.get('active', True)
+    def get_id(self):
+        return self.id
+
+@login_manager.user_loader
+def load_user(user_id):
+    from bson import ObjectId
+    from pymongo import MongoClient
+    try:
+        client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=2000)
+        doc = client['weather_rss']['users'].find_one({'_id': ObjectId(user_id)})
+        client.close()
+        return User(doc) if doc else None
+    except:
+        return None
+
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "fpren-secret-2026-change-me")
+login_manager.init_app(app)
 client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 status_col       = db[COLLECTION]
@@ -1672,9 +1703,76 @@ function toggleCustomDates() {
 """
 
 # -------------------- ROUTES ----------------------
+
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FPREN Login</title>
+  <style>
+    body { background:#1a1f24; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; font-family:Arial,sans-serif; }
+    .card { background:#212529; border:1px solid #343a40; border-radius:8px; padding:40px; width:340px; }
+    h1 { color:#0dcaf0; text-align:center; margin-bottom:8px; font-size:1.4rem; }
+    p { color:#adb5bd; text-align:center; margin-bottom:24px; font-size:0.9rem; }
+    label { color:#adb5bd; font-size:0.85rem; display:block; margin-bottom:4px; }
+    input { width:100%; padding:10px; margin-bottom:16px; background:#343a40; border:1px solid #495057; color:#fff; border-radius:4px; font-size:0.95rem; box-sizing:border-box; }
+    button { width:100%; padding:12px; background:#0dcaf0; color:#111; border:none; border-radius:4px; font-size:1rem; font-weight:bold; cursor:pointer; }
+    button:hover { background:#0bb8d4; }
+    .error { background:#3d1515; border:1px solid #a00; color:#ff8080; padding:10px; border-radius:4px; margin-bottom:16px; font-size:0.9rem; }
+    .logo { text-align:center; color:#fff; font-size:0.75rem; margin-bottom:20px; line-height:1.4; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">Florida Public Radio<br><strong style="font-size:1.1rem;color:#0dcaf0;">FPREN</strong><br>Emergency Network</div>
+    <h1>Sign In</h1>
+    <p>FPREN Weather Station Control</p>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="POST">
+      <label>Username</label>
+      <input type="text" name="username" autofocus required>
+      <label>Password</label>
+      <input type="password" name="password" required>
+      <button type="submit">Sign In</button>
+    </form>
+  </div>
+</body>
+</html>
+"""
+
+@app.route("/login", methods=["GET","POST"])
+def login_page():
+    from flask_login import current_user
+    if current_user.is_authenticated:
+        return redirect(url_for("dashboard"))
+    error = None
+    if request.method == "POST":
+        username = request.form.get("username","").strip()
+        password = request.form.get("password","").encode()
+        from pymongo import MongoClient
+        client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=2000)
+        doc = client["weather_rss"]["users"].find_one({"username": username, "active": True})
+        client.close()
+        if doc and bcrypt.checkpw(password, doc["password"].encode()):
+            login_user(User(doc), remember=True)
+            return redirect(url_for("dashboard"))
+        error = "Invalid username or password."
+    from flask import render_template_string
+    return render_template_string(LOGIN_HTML, error=error)
+
+@app.route("/logout")
+@login_required
+def logout_route():
+    logout_user()
+    return redirect(url_for("login_page"))
+
 @app.route("/")
+@login_required
 def dashboard():
-    return render_template_string(HTML_TEMPLATE, zones=AVAILABLE_ZONES)
+    html = render_template_string(HTML_TEMPLATE, zones=AVAILABLE_ZONES)
+    return html.encode("utf-8", "replace").decode("utf-8")
 
 # -------------------- STREAM CONFIG API ------------------
 @app.route("/api/streams")
@@ -1929,9 +2027,6 @@ def _save_stream_playlists(data):
     with open(STREAM_PLAYLISTS_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    return "", 200
 
 @app.route("/api/playlist")
 def api_playlist():
@@ -2747,6 +2842,83 @@ def api_upload_delete():
         return jsonify({"ok": False, "message": "Not found"}), 404
     os.remove(path)
     return jsonify({"ok": True, "message": f"Deleted {filename}"})
+
+@app.route("/api/users", methods=["GET"])
+@login_required
+def api_users():
+    if current_user.role != "admin":
+        return jsonify({"ok": False, "message": "Admin only"}), 403
+    from pymongo import MongoClient
+    client = MongoClient("mongodb://localhost:27017/")
+    users = list(client["weather_rss"]["users"].find({}, {"password":0}))
+    client.close()
+    for u in users:
+        u["_id"] = str(u["_id"])
+        if "created_at" in u:
+            u["created_at"] = str(u["created_at"])
+    return jsonify({"users": users})
+
+@app.route("/api/users/add", methods=["POST"])
+@login_required
+def api_users_add():
+    if current_user.role != "admin":
+        return jsonify({"ok": False, "message": "Admin only"}), 403
+    data = request.get_json(silent=True) or {}
+    username = data.get("username","").strip()
+    password = data.get("password","").strip()
+    role     = data.get("role","viewer").strip()
+    if not username or not password:
+        return jsonify({"ok": False, "message": "Username and password required"}), 400
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    from pymongo import MongoClient
+    from datetime import datetime, timezone
+    client = MongoClient("mongodb://localhost:27017/")
+    col = client["weather_rss"]["users"]
+    if col.find_one({"username": username}):
+        client.close()
+        return jsonify({"ok": False, "message": "Username already exists"}), 400
+    col.insert_one({"username": username, "password": hashed, "role": role,
+                    "active": True, "created_at": datetime.now(timezone.utc)})
+    client.close()
+    return jsonify({"ok": True, "message": f"User {username} created"})
+
+@app.route("/api/users/delete", methods=["POST"])
+@login_required
+def api_users_delete():
+    if current_user.role != "admin":
+        return jsonify({"ok": False, "message": "Admin only"}), 403
+    data = request.get_json(silent=True) or {}
+    username = data.get("username","").strip()
+    if username == current_user.username:
+        return jsonify({"ok": False, "message": "Cannot delete yourself"}), 400
+    from pymongo import MongoClient
+    client = MongoClient("mongodb://localhost:27017/")
+    result = client["weather_rss"]["users"].delete_one({"username": username})
+    client.close()
+    if result.deleted_count:
+        return jsonify({"ok": True, "message": f"User {username} deleted"})
+    return jsonify({"ok": False, "message": "User not found"}), 404
+
+@app.route("/api/users/password", methods=["POST"])
+@login_required
+def api_users_password():
+    if current_user.role != "admin":
+        return jsonify({"ok": False, "message": "Admin only"}), 403
+    data = request.get_json(silent=True) or {}
+    username = data.get("username","").strip()
+    password = data.get("password","").strip()
+    if not username or not password:
+        return jsonify({"ok": False, "message": "Username and password required"}), 400
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    from pymongo import MongoClient
+    client = MongoClient("mongodb://localhost:27017/")
+    result = client["weather_rss"]["users"].update_one(
+        {"username": username}, {"$set": {"password": hashed}})
+    client.close()
+    if result.modified_count:
+        return jsonify({"ok": True, "message": f"Password updated for {username}"})
+    return jsonify({"ok": False, "message": "User not found"}), 404
+
 @app.route("/feedback", methods=["POST"])
 def submit_feedback():
     name    = request.form.get("name", "").strip()

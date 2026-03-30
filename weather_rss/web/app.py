@@ -440,6 +440,7 @@ HTML_TEMPLATE = """
   <button onclick="showTab('airports',this)">&#9992; Airports</button>
   <button onclick="showTab('reports',this)">&#128196; Reports</button>
   <button onclick="showTab('zones',this)">&#128205; Zones</button>
+  <button onclick="showTab('upload',this)">&#8679; Upload</button>
   <button onclick="showTab('config',this)">&#9881; Config</button>
 </nav>
 
@@ -654,6 +655,7 @@ function showTab(name, btn) {
   if (name === 'reports')  loadReports();
   if (name === 'config')   loadStreamControl();
   if (name === 'zones')    loadZones();
+  if (name === 'upload')   { loadUploadList(); }
 }
 
 function toast(msg, ok=true) {
@@ -715,6 +717,7 @@ function saveZone(streamId) {
 }
 
 loadConfig();
+initUpload();
 loadSmtp();
 loadStreamControl();
 
@@ -1006,6 +1009,56 @@ function loadZones() {
         return '<tr><td>'+z.zone_id+'</td><td>'+type+'</td><td>'+counties+'</td><td>'+age+'</td><td>'+files+'</td></tr>';
       }).join('');
     }).catch(() => toast('Zones fetch failed', false));
+}
+
+function initUpload() {
+  var drop = document.getElementById('upload-drop');
+  var input = document.getElementById('upload-input');
+  drop.onclick = function() { input.click(); };
+  drop.ondragover = function(e) { e.preventDefault(); drop.style.borderColor='#0077aa'; };
+  drop.ondragleave = function() { drop.style.borderColor='#ccc'; };
+  drop.ondrop = function(e) { e.preventDefault(); drop.style.borderColor='#ccc'; uploadFiles(e.dataTransfer.files); };
+  input.onchange = function() { uploadFiles(input.files); };
+}
+function uploadFiles(files) {
+  var folder = document.getElementById('upload-folder').value;
+  var status = document.getElementById('upload-status');
+  status.innerHTML = '';
+  Array.from(files).forEach(function(file) {
+    var fd = new FormData();
+    fd.append('folder', folder);
+    fd.append('file', file);
+    fetch('/api/upload', {method:'POST', body:fd})
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var p = document.createElement('p');
+        p.style.color = d.ok ? 'green' : 'red';
+        p.textContent = d.message;
+        status.appendChild(p);
+        if (d.ok) loadUploadList();
+      });
+  });
+}
+function loadUploadList() {
+  var folder = document.getElementById('upload-folder').value;
+  fetch('/api/upload/list')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var files = d[folder] || [];
+      var el = document.getElementById('upload-file-list');
+      if (files.length === 0) { el.innerHTML='<p style="color:#aaa;">No files yet</p>'; return; }
+      var rows = files.map(function(f) {
+        return '<tr><td style="padding:6px;">'+f.name+'</td><td style="text-align:right;padding:6px;">'+f.size_kb+' KB</td><td style="text-align:center;padding:6px;"><button onclick="deleteUpload(\''+folder+'\',\''+f.name+'\')" style="color:red;border:none;background:none;cursor:pointer;">&#128465;</button></td></tr>';
+      }).join('');
+      el.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:0.9rem;"><thead><tr><th style="text-align:left;padding:6px;border-bottom:1px solid #eee;">File</th><th style="text-align:right;padding:6px;border-bottom:1px solid #eee;">Size</th><th style="padding:6px;border-bottom:1px solid #eee;">Action</th></tr></thead><tbody>'+rows+'</tbody></table>';
+    });
+}
+function deleteUpload(folder, filename) {
+  if (confirm('Delete ' + filename + '?')) {
+    fetch('/api/upload/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({folder:folder,filename:filename})})
+      .then(function(r) { return r.json(); })
+      .then(function(d) { toast(d.message, d.ok); if(d.ok) loadUploadList(); });
+  }
 }
 
 function loadWeather() {
@@ -1585,6 +1638,32 @@ function toggleCustomDates() {
       <h2>Zones</h2>
       <table class="cfg-table"><thead><tr><th>Zone</th><th>Type</th><th>Counties</th><th>Max Age</th><th>Max Files</th></tr></thead>
       <tbody id="zones-tbody"><tr><td colspan="5">Loading...</td></tr></tbody></table>
+    </div>
+  </div>
+</div>
+
+<div id="tab-upload" class="tab-panel">
+  <div style="max-width:960px;">
+    <div class="cfg-card">
+      <h2>&#8679; Upload Audio Content</h2>
+      <div style="margin-bottom:16px;">
+        <label style="color:#555;font-size:0.9rem;">Target Folder:</label>
+        <select id="upload-folder" style="margin-left:8px;padding:6px;border:1px solid #ccc;border-radius:4px;">
+          <option value="top_of_hour">Top of Hour</option>
+          <option value="imaging">Imaging / Sweepers</option>
+          <option value="music">Music</option>
+          <option value="educational">Educational</option>
+          <option value="weather_report">Weather Report</option>
+        </select>
+      </div>
+      <div id="upload-drop" style="border:2px dashed #ccc;border-radius:8px;padding:40px;text-align:center;cursor:pointer;margin-bottom:16px;background:#fafafa;">
+        <p style="font-size:1.1rem;color:#555;">&#127925; Drag and drop MP3/WAV files here</p>
+        <p style="color:#aaa;font-size:0.85rem;">or click to browse</p>
+        <input type="file" id="upload-input" multiple accept=".mp3,.wav,.ogg,.m4a" style="display:none;">
+      </div>
+      <div id="upload-status" style="margin-bottom:16px;"></div>
+      <h3 style="margin-bottom:8px;color:#444;">Files in folder:</h3>
+      <div id="upload-file-list">Loading...</div>
     </div>
   </div>
 </div>
@@ -2612,6 +2691,62 @@ def api_zones():
     except Exception as e:
         return jsonify({"zones": [], "error": str(e)})
 
+
+CONTENT_ROOT = '/home/ufuser/Fpren-main/weather_station/audio/content'
+UPLOAD_FOLDERS = {
+    'top_of_hour': CONTENT_ROOT + '/top_of_hour',
+    'imaging': CONTENT_ROOT + '/imaging',
+    'music': CONTENT_ROOT + '/music',
+    'educational': CONTENT_ROOT + '/educational',
+    'weather_report': CONTENT_ROOT + '/weather_report',
+}
+ALLOWED_EXT = {'.mp3', '.wav', '.ogg', '.m4a'}
+
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+    from werkzeug.utils import secure_filename
+    folder = request.form.get("folder","").strip()
+    if folder not in UPLOAD_FOLDERS:
+        return jsonify({"ok": False, "message": "Invalid folder"}), 400
+    if "file" not in request.files:
+        return jsonify({"ok": False, "message": "No file"}), 400
+    f = request.files["file"]
+    ext = os.path.splitext(f.filename)[1].lower()
+    if ext not in ALLOWED_EXT:
+        return jsonify({"ok": False, "message": f"Type {ext} not allowed"}), 400
+    name = secure_filename(f.filename)
+    dest = os.path.join(UPLOAD_FOLDERS[folder], name)
+    os.makedirs(UPLOAD_FOLDERS[folder], exist_ok=True)
+    f.save(dest)
+    return jsonify({"ok": True, "message": f"Uploaded {name} to {folder}"})
+
+@app.route("/api/upload/list")
+def api_upload_list():
+    result = {}
+    for folder, path in UPLOAD_FOLDERS.items():
+        if os.path.isdir(path):
+            result[folder] = sorted([
+                {"name": f, "size_kb": os.path.getsize(os.path.join(path,f))//1024}
+                for f in os.listdir(path)
+                if os.path.splitext(f)[1].lower() in ALLOWED_EXT
+            ], key=lambda x: x["name"])
+        else:
+            result[folder] = []
+    return jsonify(result)
+
+@app.route("/api/upload/delete", methods=["POST"])
+def api_upload_delete():
+    from werkzeug.utils import secure_filename
+    data = request.get_json(silent=True) or {}
+    folder = data.get("folder","").strip()
+    filename = data.get("filename","").strip()
+    if folder not in UPLOAD_FOLDERS or not filename:
+        return jsonify({"ok": False, "message": "Invalid"}), 400
+    path = os.path.join(UPLOAD_FOLDERS[folder], secure_filename(filename))
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "message": "Not found"}), 404
+    os.remove(path)
+    return jsonify({"ok": True, "message": f"Deleted {filename}"})
 @app.route("/feedback", methods=["POST"])
 def submit_feedback():
     name    = request.form.get("name", "").strip()

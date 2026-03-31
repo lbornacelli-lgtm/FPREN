@@ -80,7 +80,9 @@ ui <- dashboardPage(
       menuItem("Feed Status",     tabName = "feeds",     icon = icon("rss")),
       menuItem("Reports",         tabName = "reports",       icon = icon("file-pdf")),
       menuItem("Stream Alerts",   tabName = "stream_alerts", icon = icon("bell")),
-      menuItem("Config",          tabName = "config",        icon = icon("cog"))
+      menuItem("Config",          tabName = "config",        icon = icon("cog")),
+      menuItem("Upload Content",   tabName = "upload",        icon = icon("upload")),
+      menuItem("Zones",            tabName = "zones",         icon = icon("map"))
     )
   ),
 
@@ -283,6 +285,50 @@ ui <- dashboardPage(
               br(),
               actionButton("btn_cfg_refresh_status", "Refresh Status",
                            class = "btn-xs btn-default", icon = icon("sync"))
+          )
+        )
+      ),
+      tabItem(tabName = "upload",
+        fluidRow(
+          box(title = "Upload Audio Content", width = 12, status = "primary",
+              solidHeader = TRUE,
+              selectInput("upload_folder", "Target Folder",
+                choices = c("Top of Hour"="top_of_hour","Imaging"="imaging",
+                            "Music"="music","Educational"="educational",
+                            "Weather Report"="weather_report")),
+              fileInput("upload_file", "Choose Audio File(s)",
+                multiple = TRUE, accept = c(".mp3",".wav",".ogg",".m4a")),
+              actionButton("btn_upload", "Upload Files",
+                class = "btn-primary", icon = icon("upload")),
+              hr(),
+              h5("Files in Selected Folder:"),
+              DT::dataTableOutput("upload_file_list"),
+              verbatimTextOutput("upload_status")
+          )
+        )
+      ),
+      tabItem(tabName = "zones",
+        fluidRow(
+          box(title = "Zone Definitions", width = 12, status = "info",
+              solidHeader = TRUE,
+              DT::dataTableOutput("zones_table")
+          )
+        ),
+        fluidRow(
+          box(title = "User Management", width = 12, status = "warning",
+              solidHeader = TRUE,
+              DT::dataTableOutput("users_table"),
+              hr(),
+              h5("Add New User"),
+              fluidRow(
+                column(3, textInput("new_user_name", "Username", value = "")),
+                column(3, passwordInput("new_user_pass", "Password", value = "")),
+                column(3, selectInput("new_user_role", "Role",
+                  choices = c("admin","operator","viewer"), selected = "viewer")),
+                column(3, br(), actionButton("btn_add_user", "Add User",
+                  class = "btn-success", icon = icon("user-plus")))
+              ),
+              verbatimTextOutput("user_mgmt_status")
           )
         )
       ),
@@ -812,6 +858,67 @@ server <- function(input, output, session) {
       })
     )
   })
+
+  # User Management
+  user_mgmt_msg <- reactiveVal("")
+  users_col <- get_col("users")
+  output$users_table <- DT::renderDataTable({
+    input$btn_add_user
+    tryCatch({
+      u <- users_col$find("{}", fields = '{"password":0,"_id":0}')
+      if (nrow(u) == 0) return(data.frame(Message="No users found"))
+      u
+    }, error = function(e) data.frame(Error=conditionMessage(e)))
+  }, options=list(pageLength=10), rownames=FALSE)
+  observeEvent(input$btn_add_user, {
+    req(input$new_user_name, input$new_user_pass)
+    tryCatch({
+      users_col$insert(data.frame(username=trimws(input$new_user_name),
+        password=bcrypt::hashpw(input$new_user_pass),
+        role=input$new_user_role, active=TRUE, stringsAsFactors=FALSE))
+      user_mgmt_msg(paste("User", input$new_user_name, "created."))
+      updateTextInput(session, "new_user_name", value="")
+      updateTextInput(session, "new_user_pass", value="")
+    }, error=function(e) user_mgmt_msg(paste("Error:", conditionMessage(e))))
+  })
+  output$user_mgmt_status <- renderText({ user_mgmt_msg() })
+
+  # Upload Content
+  CONTENT_ROOT <- "/home/ufuser/Fpren-main/weather_station/audio/content"
+  upload_msg <- reactiveVal("")
+  output$upload_file_list <- DT::renderDataTable({
+    input$btn_upload; input$upload_folder
+    folder <- file.path(CONTENT_ROOT, input$upload_folder)
+    if (!dir.exists(folder)) return(data.frame(Message="Folder not found"))
+    files <- list.files(folder, pattern="\\.(mp3|wav|ogg|m4a)$", ignore.case=TRUE)
+    if (length(files)==0) return(data.frame(Message="No files yet"))
+    data.frame(Filename=files, Size_KB=file.size(file.path(folder,files))%/%1024,
+               stringsAsFactors=FALSE)
+  }, options=list(pageLength=20), rownames=FALSE)
+  observeEvent(input$btn_upload, {
+    req(input$upload_file)
+    folder <- file.path(CONTENT_ROOT, input$upload_folder)
+    dir.create(folder, showWarnings=FALSE, recursive=TRUE)
+    results <- sapply(seq_len(nrow(input$upload_file)), function(i) {
+      tryCatch({ file.copy(input$upload_file$datapath[i],
+        file.path(folder, input$upload_file$name[i]), overwrite=TRUE)
+        paste("OK:", input$upload_file$name[i])
+      }, error=function(e) paste("FAIL:", input$upload_file$name[i]))
+    })
+    upload_msg(paste(results, collapse="\n"))
+  })
+  output$upload_status <- renderText({ upload_msg() })
+
+  # Zones
+  zones_col <- get_col("zone_definitions")
+  output$zones_table <- DT::renderDataTable({
+    tryCatch({
+      z <- zones_col$find("{}", fields='{"zone_id":1,"display_name":1,"catch_all":1,"_id":0}')
+      if (nrow(z)==0) return(data.frame(Message="No zones found"))
+      z
+    }, error=function(e) data.frame(Error=conditionMessage(e)))
+  }, options=list(pageLength=15), rownames=FALSE)
+
 }
 
 shinyApp(ui, server)

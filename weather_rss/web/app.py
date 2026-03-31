@@ -208,7 +208,7 @@ def load_user(user_id):
     from bson import ObjectId
     from pymongo import MongoClient
     try:
-        client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=2000)
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
         doc = client['weather_rss']['users'].find_one({'_id': ObjectId(user_id)})
         client.close()
         return User(doc) if doc else None
@@ -553,8 +553,6 @@ HTML_TEMPLATE = """
     </div>
     <p class="cfg-note">Settings are saved to config/smtp_config.json and used by all email alert notifications.</p>
   </div>
-</div>
-
   <div class="cfg-card">
     <h2>User Management</h2>
     <table class="cfg-table"><thead><tr><th>Username</th><th>Role</th><th>Actions</th></tr></thead>
@@ -571,6 +569,7 @@ HTML_TEMPLATE = """
     </div>
     <p class="cfg-note">Admins have full access. Operators can upload content. Viewers are read-only.</p>
   </div>
+</div>
 <!-- ===== PLAYLIST TAB ===== -->
 <div id="tab-playlist" class="tab-panel">
   <div id="pl-load" style="text-align:center;padding:40px;color:#888;font-size:1rem;">Click the Playlist tab to load&hellip;</div>
@@ -700,9 +699,9 @@ function showTab(name, btn) {
   if (name === 'data')     loadDataTab();
   if (name === 'airports') loadAirports();
   if (name === 'reports')  loadReports();
-  if (name === 'config')   loadStreamControl();
+  if (name === 'config')   { loadStreamControl(); loadSmtp(); loadUsers(); }
   if (name === 'zones')    loadZones();
-  if (name === 'upload')   { loadUploadList(); }
+  if (name === 'upload')   { initUpload(); loadUploadList(); }
 }
 
 function toast(msg, ok=true) {
@@ -770,7 +769,7 @@ loadStreamControl();
 
 // Restore last active tab and start auto-refresh
 (function() {
-  const saved = localStorage.getItem('activeTab') || 'data';
+  const saved = localStorage.getItem('activeTab') || 'weather';
   const panel = document.getElementById('tab-' + saved);
   if (panel) {
     for (const btn of document.querySelectorAll('.tab-nav button')) {
@@ -1061,6 +1060,7 @@ function loadZones() {
 function initUpload() {
   var drop = document.getElementById('upload-drop');
   var input = document.getElementById('upload-input');
+  if (!drop || !input) return;
   drop.onclick = function() { input.click(); };
   drop.ondragover = function(e) { e.preventDefault(); drop.style.borderColor='#0077aa'; };
   drop.ondragleave = function() { drop.style.borderColor='#ccc'; };
@@ -1124,8 +1124,8 @@ function loadUsers() {
           '<td style="padding:8px;">' + u.username + (isMe ? ' <span style="color:#0077aa;font-size:0.8rem;">(you)</span>' : '') + '</td>' +
           '<td style="padding:8px;">' + u.role + '</td>' +
           '<td style="padding:8px;">' +
-            '<button onclick="resetPassword('' + u.username + '')" style="font-size:0.8rem;padding:3px 8px;margin-right:4px;border:1px solid #ccc;border-radius:3px;cursor:pointer;">Reset PW</button>' +
-            (!isMe ? '<button onclick="deleteUser('' + u.username + '')" style="font-size:0.8rem;padding:3px 8px;border:1px solid #fcc;border-radius:3px;cursor:pointer;color:red;">Delete</button>' : '') +
+            '<button onclick="resetPassword(\'' + u.username + '\')" style="font-size:0.8rem;padding:3px 8px;margin-right:4px;border:1px solid #ccc;border-radius:3px;cursor:pointer;">Reset PW</button>' +
+            (!isMe ? '<button onclick="deleteUser(\'' + u.username + '\')" style="font-size:0.8rem;padding:3px 8px;border:1px solid #fcc;border-radius:3px;cursor:pointer;color:red;">Delete</button>' : '') +
           '</td></tr>';
       }).join('');
     })
@@ -1823,7 +1823,7 @@ def login_page():
         username = request.form.get("username","").strip()
         password = request.form.get("password","").encode()
         from pymongo import MongoClient
-        client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=2000)
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
         doc = client["weather_rss"]["users"].find_one({"username": username, "active": True})
         client.close()
         if doc and bcrypt.checkpw(password, doc["password"].encode()):

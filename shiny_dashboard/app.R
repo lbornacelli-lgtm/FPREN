@@ -1,5 +1,7 @@
 library(shiny)
 library(shinydashboard)
+library(shinymanager)
+library(bcrypt)
 library(mongolite)
 library(DT)
 library(dplyr)
@@ -760,6 +762,23 @@ ui <- dashboardPage(
               actionButton("btn_cfg_refresh_status", "Refresh Status",
                            class = "btn-xs btn-default", icon = icon("sync"))
           )
+        ),
+        fluidRow(
+          box(title = "User Management", width = 12, status = "warning",
+              solidHeader = TRUE,
+              DT::dataTableOutput("users_table"),
+              hr(),
+              h5("Add New User"),
+              fluidRow(
+                column(3, textInput("new_user_name", "Username", value = "")),
+                column(3, passwordInput("new_user_pass", "Password", value = "")),
+                column(3, selectInput("new_user_role", "Role",
+                  choices = c("admin","operator","viewer"), selected = "viewer")),
+                column(3, br(), actionButton("btn_add_user", "Add User",
+                  class = "btn-success", icon = icon("user-plus")))
+              ),
+              verbatimTextOutput("user_mgmt_status")
+          )
         )
       ),
       tabItem(tabName = "upload",
@@ -786,23 +805,6 @@ ui <- dashboardPage(
           box(title = "Zone Definitions", width = 12, status = "info",
               solidHeader = TRUE,
               DT::dataTableOutput("zones_table")
-          )
-        ),
-        fluidRow(
-          box(title = "User Management", width = 12, status = "warning",
-              solidHeader = TRUE,
-              DT::dataTableOutput("users_table"),
-              hr(),
-              h5("Add New User"),
-              fluidRow(
-                column(3, textInput("new_user_name", "Username", value = "")),
-                column(3, passwordInput("new_user_pass", "Password", value = "")),
-                column(3, selectInput("new_user_role", "Role",
-                  choices = c("admin","operator","viewer"), selected = "viewer")),
-                column(3, br(), actionButton("btn_add_user", "Add User",
-                  class = "btn-success", icon = icon("user-plus")))
-              ),
-              verbatimTextOutput("user_mgmt_status")
           )
         )
       ),
@@ -902,8 +904,38 @@ ui <- dashboardPage(
   )
 )
 
+# ── MongoDB credential check for shinymanager ────────────────────────────────
+check_credentials_mongo <- function(user, password) {
+  if (!grepl("^[A-Za-z0-9._@-]{1,64}$", user))
+    return(list(result = FALSE, message = "Invalid credentials."))
+  col <- tryCatch(
+    mongo(collection = "users", db = "weather_rss", url = MONGO_URI),
+    error = function(e) NULL
+  )
+  if (is.null(col))
+    return(list(result = FALSE, message = "Authentication service unavailable."))
+  doc <- tryCatch({
+    d <- col$find(
+      sprintf('{"username":"%s"}', gsub('"', '', user, fixed = TRUE)),
+      fields = '{"username":1,"password":1,"role":1,"_id":0}',
+      limit  = 1
+    )
+    col$disconnect()
+    d
+  }, error = function(e) {
+    tryCatch(col$disconnect(), error = function(e2) NULL)
+    data.frame()
+  })
+  if (nrow(doc) == 0 || !bcrypt::checkpw(password, doc$password[1]))
+    return(list(result = FALSE, message = "Invalid credentials."))
+  list(result = TRUE)
+}
+
 # ── Server ────────────────────────────────────────────────────────────────────
 server <- function(input, output, session) {
+
+  # Enforce login — blocks all server logic until authenticated
+  secure_server(check_credentials = check_credentials_mongo)
 
   # Auto-refresh timer
   timer <- reactiveTimer(60000)
@@ -2326,5 +2358,20 @@ server <- function(input, output, session) {
   }, options=list(pageLength=15), rownames=FALSE)
 
 }
+
+ui <- secure_app(
+  ui,
+  background  = "#1a1f24",
+  tags_top    = tags$div(
+    style = "text-align:center; padding:10px 0 4px;",
+    tags$h3("FPREN", style = "color:#0dcaf0; margin:0 0 4px;"),
+    tags$p("Florida Public Radio Emergency Network",
+           style = "color:#adb5bd; font-size:0.88rem; margin:0;")
+  ),
+  tags_bottom = tags$p(
+    "Authorized personnel only.",
+    style = "text-align:center; font-size:0.78rem; color:#6c757d; margin-top:12px;"
+  )
+)
 
 shinyApp(ui, server)

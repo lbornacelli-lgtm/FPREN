@@ -1,0 +1,21 @@
+[Unit]
+Description=FPREN Broadcast Generator — AI weather broadcast scripts for all 9 zones
+After=network.target mongod.service zone-alert-tts.service
+Wants=mongod.service zone-alert-tts.service
+
+[Service]
+Type=simple
+User=ufuser
+# WorkingDirectory must be the repo root (not weather_station/) so that
+# "weather_station.*" package imports resolve without a pip install.
+WorkingDirectory=/home/ufuser/Fpren-main
+ExecStart=/home/ufuser/Fpren-main/venv/bin/python3 -m weather_station.services.broadcast_generator
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=60
+EnvironmentFile=/home/ufuser/Fpren-main/weather_station/.env
+StandardOutput=append:/home/ufuser/Fpren-main/logs/broadcast_generator.log
+StandardError=append:/home/ufuser/Fpren-main/logs/broadcast_generator.log
+
+[Install]
+WantedBy=multi-user.target

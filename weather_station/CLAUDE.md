@@ -39,7 +39,7 @@ Run by systemd service `beacon-station-engine`.
 | `ai_classifier.py` | LiteLLM severity classification + text rewrite |
 | `ai_client.py` | UF LiteLLM API client (`llama-3.3-70b-instruct`) |
 | `ai_playlist.py` | AI-driven playlist decisions |
-| `broadcast_generator.py` | AI broadcast script → TTS audio |
+| `broadcast_generator.py` | AI broadcast script → TTS audio (run by `fpren-broadcast-generator` service/timer) |
 | `elevenlabs_tts.py` | ElevenLabs TTS for critical alerts only |
 | `icecast_streamer.py` | FFmpeg → Icecast stream feeder |
 | `county_rss_fetcher.py` | NWS alerts by FL county FIPS code |

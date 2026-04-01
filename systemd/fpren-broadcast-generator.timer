@@ -1,0 +1,14 @@
+[Unit]
+Description=FPREN Broadcast Generator — trigger every 30 minutes
+Requires=fpren-broadcast-generator.service
+
+[Timer]
+# Fire 2 minutes after boot, then every 30 minutes
+OnBootSec=2min
+OnUnitActiveSec=30min
+# If a scheduled run was missed (e.g. system was off), catch up once on next boot
+Persistent=true
+Unit=fpren-broadcast-generator.service
+
+[Install]
+WantedBy=timers.target

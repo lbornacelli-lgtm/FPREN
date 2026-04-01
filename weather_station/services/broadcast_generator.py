@@ -4,15 +4,21 @@
 broadcast_generator.py
 -----------------------
 Generates AI broadcast scripts from live MongoDB data and converts
-them to audio via TTS (ElevenLabs for quality, gTTS as fallback).
+them to audio via TTS (ElevenLabs for quality, Piper as fallback).
 
-Can be run standalone or called from zone_alert_tts.py on a schedule.
+Runs as a long-lived daemon (main()) that calls run_all_zones() every
+BROADCAST_INTERVAL seconds (default: 1800 = 30 minutes).  Handles
+SIGINT and SIGTERM for clean shutdown.
+
+Can also be imported and called directly: run_all_zones(db, tts).
 
 Output: zones/{zone}/weather_report/broadcast_{timestamp}.mp3
 """
 
 import logging
 import os
+import signal
+import threading
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
@@ -153,11 +159,11 @@ def generate_broadcast_audio(db, zone_id: str, tts: TTSService = None) -> str | 
             return out_path
         logger.warning("ElevenLabs failed — falling back to gTTS")
 
-    # Fall back to gTTS
+    # Fall back to Piper
     try:
         _tts = tts or TTSService()
         _tts.say(script, output_file=out_path)
-        logger.info("Broadcast audio (gTTS) → %s", out_path)
+        logger.info("Broadcast audio (Piper) → %s", out_path)
         return out_path
     except Exception as e:
         logger.error("Broadcast audio generation failed for %s: %s", zone_id, e)
@@ -179,16 +185,47 @@ def run_all_zones(db, tts: TTSService = None):
             logger.error("Broadcast failed [%s]: %s", zone_id, e)
 
 
+BROADCAST_INTERVAL = int(os.getenv("BROADCAST_INTERVAL", 1800))  # seconds
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s [broadcast_generator] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
-    client = MongoClient(MONGO_URI)
-    db     = client[DB_NAME]
-    tts    = TTSService()
-    run_all_zones(db, tts)
+
+    client  = MongoClient(MONGO_URI)
+    db      = client[DB_NAME]
+    tts     = TTSService()
+    running = True
+    wakeup  = threading.Event()
+
+    def _shutdown(signum, frame):
+        nonlocal running
+        logger.info("Shutdown signal %d received — stopping.", signum)
+        running = False
+        wakeup.set()  # unblock the sleep immediately
+
+    signal.signal(signal.SIGINT,  _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    logger.info(
+        "broadcast_generator started — interval: %ds (%d min)",
+        BROADCAST_INTERVAL, BROADCAST_INTERVAL // 60,
+    )
+
+    while running:
+        try:
+            run_all_zones(db, tts)
+        except Exception as e:
+            logger.exception("Unexpected error in broadcast loop: %s", e)
+        if running:
+            wakeup.wait(timeout=BROADCAST_INTERVAL)
+            wakeup.clear()
+
     client.close()
+    logger.info("broadcast_generator stopped.")
 
 
 if __name__ == "__main__":

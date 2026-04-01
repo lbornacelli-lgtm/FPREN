@@ -21,6 +21,7 @@ FPREN (Florida Public Radio Emergency Network) is a 24/7 automated weather radio
 | `beacon-extended-fetcher` | `weather_rss/extended_fetcher.py` | Extended forecast + FL511 traffic |
 | `beacon-mongo-tts` | `mongo_tts/app.py` | MongoDB TTS monitor |
 | `zone-alert-tts` | `weather_station/services/zone_alert_tts.py` | Alert → MP3 per zone (main pipeline) |
+| `fpren-broadcast-generator` | `weather_station/services/broadcast_generator.py` | AI broadcast scripts → MP3 per zone (every 30 min via timer) |
 | `icecast2` | system | Audio streaming server |
 | `shiny-server` | `/srv/shiny-server/fpren/app.R` | Primary monitoring dashboard |
 | `mongod` | system | MongoDB (`weather_rss` database) |
@@ -219,7 +220,6 @@ ICECAST_SOURCE_PASSWORD=fpren_source
 - [ ] Ports 8001–8010 pending UF IT approval (multi-zone streams)
 - [ ] Wire `ai_classifier` into `zone_alert_tts.py` main pipeline
 - [ ] Multi-zone Icecast streaming (one FFmpeg process per zone)
-- [ ] Systemd unit file for `broadcast_generator`
 - [ ] Fix Flask dashboard tab loading issue
 - [ ] Desktop app (`weather_rss/web/fpren_desktop.py`) tab sync
 

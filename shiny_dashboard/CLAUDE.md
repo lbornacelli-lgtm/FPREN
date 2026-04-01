@@ -58,10 +58,13 @@ Or use the slash command: `/deploy-shiny`
 
 | URL | Port | Auth |
 |-----|------|------|
-| `http://128.227.67.234` | 80 → 3838 via Nginx | None (public) |
-| `http://128.227.67.234:3838` | 3838 | None (direct) |
+| `https://128.227.67.234` | 443 → 3838 via Nginx (SSL) | None (public) |
+| `http://128.227.67.234` | 80 → redirects to 443 | — |
+| `http://128.227.67.234:3838` | 3838 | None (direct, bypasses SSL) |
 
-Port 80 is pending UF IT firewall approval — direct port 3838 access works now.
+Ports 80 and 443 are pending UF IT firewall approval — direct port 3838 access works now.
+Self-signed cert at `/etc/ssl/certs/fpren.crt` (valid until Mar 2027); browsers will show
+a security warning until replaced with a CA-signed cert (e.g. Let's Encrypt or UF InCommon).
 
 ---
 

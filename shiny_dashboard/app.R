@@ -336,9 +336,15 @@ get_col <- function(collection) {
 ui <- dashboardPage(
   skin = "blue",
 
-  dashboardHeader(title = "FPREN Weather Station"),
+  dashboardHeader(
+    title = tags$span(
+      style = "font-size: 13px; font-weight: bold; line-height: 1.35; white-space: normal;",
+      "Florida Public Radio Emergency Network"
+    ),
+    titleWidth = 280
+  ),
 
-  dashboardSidebar(
+  dashboardSidebar(width = 280,
     sidebarMenu(
       menuItem("Overview",              tabName = "overview",       icon = icon("tachometer-alt")),
       menuItem("Weather Conditions",    tabName = "wx_cities",      icon = icon("cloud-sun")),

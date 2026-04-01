@@ -277,15 +277,15 @@ daily_counts <- alerts_raw %>%
 
 lambda_hat  <- mean(daily_counts$n)
 variance    <- var(daily_counts$n)
-dispersion  <- variance / lambda_hat
+dispersion  <- if (is.na(variance) || lambda_hat == 0) NA_real_ else variance / lambda_hat
+
+disp_label <- if (is.na(dispersion)) " — *insufficient data for dispersion*" else if (dispersion > 1.5) " — *overdispersed (bursty pattern)*" else if (dispersion < 0.5) " — *underdispersed (regular pattern)*" else " — *consistent with Poisson process*"
 
 cat(paste0(
   "**Mean daily alert rate (λ):** ", round(lambda_hat, 2), " alerts/day\n\n",
-  "**Variance:** ", round(variance, 2), "\n\n",
-  "**Dispersion index (var/mean):** ", round(dispersion, 2),
-  if (dispersion > 1.5) " — *overdispersed (bursty pattern)*"
-  else if (dispersion < 0.5) " — *underdispersed (regular pattern)*"
-  else " — *consistent with Poisson process*",
+  "**Variance:** ", ifelse(is.na(variance), "N/A (single day)", round(variance, 2)), "\n\n",
+  "**Dispersion index (var/mean):** ", ifelse(is.na(dispersion), "N/A", round(dispersion, 2)),
+  disp_label,
   "\n\n",
   "**95% CI for daily rate:** [",
   round(qpois(0.025, lambda_hat), 0), ", ",

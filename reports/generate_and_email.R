@@ -21,7 +21,7 @@ suppressPackageStartupMessages({
   library(jsonlite)
 })
 
-`%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 && nchar(as.character(a)) > 0) a else b
+`%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 && !is.na(a) && nchar(as.character(a)) > 0) a else b
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 args             <- commandArgs(trailingOnly = TRUE)

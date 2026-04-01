@@ -687,6 +687,17 @@ function _isStale(tab) {
 }
 function _markLoaded(tab) { _tabLoaded[tab] = Date.now(); }
 
+// Wrap every fetch() with a 10-second timeout so a slow endpoint cannot freeze the page
+(function() {
+  const _orig = window.fetch;
+  window.fetch = function(url, opts) {
+    const ctrl = new AbortController();
+    const id = setTimeout(() => ctrl.abort(), 10000);
+    return _orig(url, Object.assign({}, opts, { signal: ctrl.signal }))
+      .finally(() => clearTimeout(id));
+  };
+})();
+
 function showTab(name, btn) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab-nav button').forEach(b => b.classList.remove('active'));
@@ -699,7 +710,7 @@ function showTab(name, btn) {
   if (name === 'data')     loadDataTab();
   if (name === 'airports') loadAirports();
   if (name === 'reports')  loadReports();
-  if (name === 'config')   { loadStreamControl(); loadSmtp(); loadUsers(); }
+  if (name === 'config')   { loadConfig(); loadStreamControl(); loadSmtp(); loadUsers(); }
   if (name === 'zones')    loadZones();
   if (name === 'upload')   { initUpload(); loadUploadList(); }
 }
@@ -762,28 +773,26 @@ function saveZone(streamId) {
   .catch(() => toast('Request failed', false));
 }
 
-loadConfig();
-initUpload();
-loadSmtp();
-loadStreamControl();
-
 // Restore last active tab and start auto-refresh
 (function() {
   const saved = localStorage.getItem('activeTab') || 'weather';
+  // Never auto-restore config tab on load (its loaders are deferred to user click).
+  // Fall back to 'weather' if the saved tab panel doesn't exist in the DOM.
   const panel = document.getElementById('tab-' + saved);
-  if (panel) {
-    for (const btn of document.querySelectorAll('.tab-nav button')) {
-      if ((btn.getAttribute('onclick') || '').includes("'" + saved + "'")) {
-        showTab(saved, btn);
-        break;
-      }
+  const effectiveTab = (saved === 'config' || !panel) ? 'weather' : saved;
+
+  for (const btn of document.querySelectorAll('.tab-nav button')) {
+    if ((btn.getAttribute('onclick') || '').includes("'" + effectiveTab + "'")) {
+      showTab(effectiveTab, btn);
+      break;
     }
-  } else {
-    loadDataTab();
   }
 
+  // These two always run on page load regardless of which tab is active
+  loadWeather();
+  initUpload();
+
   // Auto-refresh intervals (in-place, no page reload)
-  setInterval(() => { if (_isStale('data'))     loadDataTab(); },   0);  // checked on interval
   setInterval(loadDataTab,   60000);   // data tab: every 60s
   setInterval(loadAirports, 120000);   // airports: every 2 min
   setInterval(loadIcecast,   30000);   // icecast: every 30s
@@ -1828,7 +1837,7 @@ def login_page():
         client.close()
         if doc and bcrypt.checkpw(password, doc["password"].encode()):
             login_user(User(doc), remember=True)
-            return redirect(url_for("dashboard"))
+            return redirect(url_for('dashboard'))
         error = "Invalid username or password."
     from flask import render_template_string
     return render_template_string(LOGIN_HTML, error=error)

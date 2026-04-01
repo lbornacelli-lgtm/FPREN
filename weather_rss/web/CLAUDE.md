@@ -173,4 +173,11 @@ curl -s -X POST http://localhost:5000/api/ai/rewrite-alert \
 - SMTP config is persisted to `smtp_config.json`. Editing the file directly works but prefer the API.
 - The Flask app reads Icecast status by hitting `http://localhost:8000/status-json.xsl` — if Icecast is down, `/api/icecast` will return partial data.
 - `fpren_desktop.py` is a standalone Tkinter app, not served by the Flask service. Run it locally.
-- Tab loading issues in the dashboard UI are a known bug — tabs may fail to populate on first load, requiring a page refresh.
+
+## Frontend Tab Behaviour (fixed 2026-04-01)
+
+- **Default tab is Weather.** The `localStorage` restore in the IIFE skips `config` and any unknown tab — it defaults to `weather` so slow config loaders never fire on page load.
+- **Config loaders are deferred.** `loadConfig()`, `loadStreamControl()`, `loadSmtp()`, and `loadUsers()` only fire when the user clicks the Config tab — never on page load.
+- **Page load calls only `loadWeather()` and `initUpload()`.**
+- **Global 10-second fetch timeout.** A fetch wrapper in the IIFE overrides `window.fetch` so every API call aborts after 10 s, preventing a hung endpoint from freezing the UI.
+- **Login always redirects to `/`** (Weather tab) — the `next` param is ignored to prevent stale redirect loops.

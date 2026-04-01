@@ -387,8 +387,7 @@ server <- function(input, output, session) {
     if (is.null(col)) return(data.frame())
     tryCatch({
       df <- col$find('{}', fields = '{"alert_id":1,"event":1,"headline":1,
-        "severity":1,"area_desc":1,"source":1,"sent":1,
-        "alachua_county":1,"_id":0}')
+        "severity":1,"area_desc":1,"source":1,"sent":1,"_id":0}')
       col$disconnect()
       df
     }, error = function(e) data.frame())
@@ -442,8 +441,8 @@ server <- function(input, output, session) {
 
   output$box_alachua_alerts <- renderValueBox({
     df <- alerts_data()
-    n  <- if (nrow(df) == 0 || !"alachua_county" %in% names(df)) 0
-          else sum(df$alachua_county == TRUE, na.rm = TRUE)
+    n  <- if (nrow(df) == 0 || !"area_desc" %in% names(df)) 0
+          else sum(grepl("alachua", df$area_desc, ignore.case = TRUE), na.rm = TRUE)
     valueBox(n, "Alachua Alerts", icon = icon("map-marker-alt"),
              color = if (n > 0) "orange" else "green")
   })
@@ -503,7 +502,7 @@ server <- function(input, output, session) {
       df <- df %>% filter(source == input$alert_source)
 
     df <- df %>% select(any_of(c("event","severity","headline","area_desc",
-                                  "source","alachua_county","sent")))
+                                  "source","sent")))
     datatable(df, options = list(pageLength = 10, scrollX = TRUE),
               rownames = FALSE) %>%
       formatStyle("severity",
@@ -518,8 +517,8 @@ server <- function(input, output, session) {
 
   alachua_df <- reactive({
     df <- alerts_data()
-    if (nrow(df) == 0 || !"alachua_county" %in% names(df)) return(data.frame())
-    df %>% filter(alachua_county == TRUE)
+    if (nrow(df) == 0 || !"area_desc" %in% names(df)) return(data.frame())
+    df %>% filter(grepl("alachua", area_desc, ignore.case = TRUE))
   })
 
   output$box_alachua_active <- renderValueBox({
@@ -538,9 +537,9 @@ server <- function(input, output, session) {
 
   output$box_alachua_wavs <- renderValueBox({
     df <- wav_data()
-    # Count WAVs for all_florida or north_florida zones (Alachua is north FL)
+    # Alachua County is the gainesville zone; also include all_florida catch-all
     n  <- if (nrow(df) == 0) 0
-          else nrow(df %>% filter(zone %in% c("all_florida","north_florida")))
+          else nrow(df %>% filter(zone %in% c("gainesville","all_florida")))
     valueBox(n, "Zone Audio Files", icon = icon("file-audio"), color = "blue")
   })
 

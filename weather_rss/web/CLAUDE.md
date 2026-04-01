@@ -174,6 +174,38 @@ curl -s -X POST http://localhost:5000/api/ai/rewrite-alert \
 - The Flask app reads Icecast status by hitting `http://localhost:8000/status-json.xsl` — if Icecast is down, `/api/icecast` will return partial data.
 - `fpren_desktop.py` is a standalone Tkinter app, not served by the Flask service. Run it locally.
 
+## Bidirectional Sync Architecture (added 2026-04-01)
+
+The web dashboard and desktop Tkinter app maintain a shared active-tab state via MongoDB `weather_rss.dashboard_state` (singleton document `_id: "singleton"`).
+
+### Flask endpoints added
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/api/sync` | Lightweight poll: returns `{token, active_tab, ts}`. Token is an 8-char MD5 hash of active_tab + updated_at. Changes whenever state changes. |
+| GET | `/api/state` | Full state: `{active_tab, active_alert_count, last_broadcast_time, pending_actions, updated_at}`. |
+| POST | `/api/state` | Accept `{active_tab?, pending_actions?}` from any client. Upserts MongoDB document and advances the token. |
+
+### Web dashboard behaviour
+- `showTab()` posts the new tab to `/api/state` on every user-initiated tab click.
+- A `setInterval(_pollSync, 5000)` polls `/api/sync` every 5 s. When the token changes it switches to the remote tab.
+- A `_syncSwitching` guard prevents the resulting `showTab()` call from echo-posting back to the server.
+
+### Desktop app behaviour
+- `<<NotebookTabChanged>>` binding calls `_on_tab_changed()` which posts the new tab to `/api/state` (suppressed during remote-driven switches via `_suppress_tab_event`).
+- A daemon thread (`_start_sync_poll`) polls `/api/sync` every 5 s. When the token changes and the remote tab differs from the current tab, `_switch_to_tab(idx)` is called on the main thread via `after(0, ...)`.
+- Full data refresh (`_refresh()`) still runs every 30 s.
+
+### Tab mapping
+| Web tab name | Desktop notebook index |
+|---|---|
+| weather | 0 |
+| playlist | 1 |
+| icecast | 2 |
+| data | 3 |
+| reports | 5 |
+| config | 7 |
+| airports, zones, upload, ai | no desktop equivalent — ignored |
+
 ## Frontend Tab Behaviour (fixed 2026-04-01)
 
 - **Default tab is Weather.** The `localStorage` restore in the IIFE skips `config` and any unknown tab — it defaults to `weather` so slow config loaders never fire on page load.

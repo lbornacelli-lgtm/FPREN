@@ -29,6 +29,32 @@ STREAMS = [
     {"id": "stream_8004", "label": "Miami",           "port": 8004, "mount": "/miami",           "zone": "miami"},
 ]
 
+# ---- Dashboard state (shared between web + desktop via MongoDB) ----
+def _get_dash_state():
+    """Read the singleton dashboard_state document from MongoDB."""
+    try:
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=1000)
+        doc = client["weather_rss"]["dashboard_state"].find_one({"_id": "singleton"}) or {}
+        client.close()
+        return doc
+    except Exception:
+        return {}
+
+def _set_dash_state(updates):
+    """Upsert the singleton dashboard_state document."""
+    try:
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=1000)
+        client["weather_rss"]["dashboard_state"].update_one(
+            {"_id": "singleton"},
+            {"$set": {**updates, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+        client.close()
+        return True
+    except Exception:
+        return False
+
+
 def _load_zone_overrides():
     try:
         with open(ZONE_OVERRIDES_FILE) as f:
@@ -698,12 +724,23 @@ function _markLoaded(tab) { _tabLoaded[tab] = Date.now(); }
   };
 })();
 
+// Guard: set to true while responding to a remote sync so we don't echo back
+let _syncSwitching = false;
+
 function showTab(name, btn) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab-nav button').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
   localStorage.setItem('activeTab', name);
+  // Push tab change to shared state so desktop app can sync (skip echo-back)
+  if (!_syncSwitching) {
+    fetch('/api/state', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({active_tab: name})
+    }).catch(() => {});
+  }
   if (name === 'weather')  loadWeather();
   if (name === 'playlist') loadPlaylist();
   if (name === 'icecast')  loadIcecast();
@@ -798,6 +835,39 @@ function saveZone(streamId) {
   setInterval(loadIcecast,   30000);   // icecast: every 30s
   setInterval(loadPlaylist,  60000);   // playlist: every 60s
   setInterval(loadWeather,  600000);   // weather: every 10 min
+
+  // ── Bidirectional sync with desktop app ─────────────────────────────
+  // Poll /api/sync every 5 s; only pull full state when the token changes.
+  let _syncToken = null;
+  function _pollSync() {
+    fetch('/api/sync')
+      .then(r => r.json())
+      .then(d => {
+        if (!d || d._error) return;
+        const tok = d.token;
+        if (_syncToken !== null && tok !== _syncToken) {
+          // State changed externally — switch to the new active tab if different
+          const remoteTab = d.active_tab;
+          if (remoteTab && remoteTab !== localStorage.getItem('activeTab')) {
+            const panel = document.getElementById('tab-' + remoteTab);
+            if (panel) {
+              for (const btn of document.querySelectorAll('.tab-nav button')) {
+                if ((btn.getAttribute('onclick') || '').includes("'" + remoteTab + "'")) {
+                  _syncSwitching = true;
+                  showTab(remoteTab, btn);
+                  _syncSwitching = false;
+                  break;
+                }
+              }
+            }
+          }
+        }
+        _syncToken = tok;
+      })
+      .catch(() => {});
+  }
+  setInterval(_pollSync, 5000);
+  _pollSync();
 })();
 
 // ---- Stream Control ----
@@ -3011,6 +3081,58 @@ def submit_feedback():
         "submitted_at": datetime.now(timezone.utc).isoformat(),
     })
     return redirect(url_for("dashboard") + "?msg=Thank+you+for+your+feedback!")
+
+
+# -------------------- SYNC / STATE (bidirectional desktop ↔ web sync) ----------
+
+@app.route("/api/sync")
+def api_sync():
+    """Lightweight endpoint for change detection. Returns a short hash token
+    that changes whenever the shared dashboard state changes. Clients poll
+    this every 5 s and only fetch full state when the token is different."""
+    import hashlib
+    state = _get_dash_state()
+    tab  = state.get("active_tab", "weather")
+    ts   = str(state.get("updated_at", ""))
+    token = hashlib.md5(f"{tab}{ts}".encode()).hexdigest()[:8]
+    return jsonify({"token": token, "active_tab": tab, "ts": ts})
+
+
+@app.route("/api/state", methods=["GET"])
+def api_state_get():
+    """Return full shared dashboard state enriched with live counts."""
+    state = _get_dash_state()
+    # Count non-expired alerts
+    try:
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=1000)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        alert_count = client["weather_rss"]["nws_alerts"].count_documents(
+            {"expires": {"$gt": now_iso}}
+        )
+        client.close()
+    except Exception:
+        alert_count = 0
+    return jsonify({
+        "active_tab":         state.get("active_tab", "weather"),
+        "active_alert_count": alert_count,
+        "last_broadcast_time": str(state.get("last_broadcast_time", "")),
+        "pending_actions":    state.get("pending_actions", []),
+        "updated_at":         str(state.get("updated_at", "")),
+    })
+
+
+@app.route("/api/state", methods=["POST"])
+def api_state_post():
+    """Accept state updates from the desktop app or web client."""
+    body = request.get_json(silent=True) or {}
+    updates = {}
+    if "active_tab" in body:
+        updates["active_tab"] = str(body["active_tab"])
+    if "pending_actions" in body:
+        updates["pending_actions"] = body["pending_actions"]
+    if updates:
+        _set_dash_state(updates)
+    return jsonify({"ok": True})
 
 
 # -------------------- RUN ------------------------

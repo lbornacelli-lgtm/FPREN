@@ -12,7 +12,18 @@ from datetime import datetime
 import requests
 
 API = "http://localhost:5000"
-REFRESH_SEC = 60
+REFRESH_SEC = 30   # full data refresh interval in seconds
+
+# ── Tab sync mappings (web tab name  ↔  Tkinter notebook index) ────────────
+_WEB_TO_DESKTOP_TAB = {
+    "weather":  0,
+    "playlist": 1,
+    "icecast":  2,
+    "data":     3,
+    "reports":  5,
+    "config":   7,
+}
+_DESKTOP_TO_WEB_TAB = {v: k for k, v in _WEB_TO_DESKTOP_TAB.items()}
 
 # Shared session for authenticated requests
 _session = requests.Session()
@@ -58,10 +69,13 @@ class FPRENApp(tk.Tk):
         self.geometry("1300x800")
         self.configure(bg="#212529")
         self._after_id = None
+        self._suppress_tab_event = False
+        self._sync_token = None
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_header()
         self._build_tabs()
         self._schedule_refresh()
+        self._start_sync_poll()
 
     def _on_close(self):
         if self._after_id is not None:
@@ -130,6 +144,9 @@ class FPRENApp(tk.Tk):
         self.nb.add(self.tab_reports,       text="📄 Reports")
         self.nb.add(self.tab_stream_notify, text="🔔 Stream Alerts")
         self.nb.add(self.tab_config,        text="⚙ Config")   # always last
+
+        # Push tab changes to shared state so the web dashboard can sync
+        self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self._build_weather_tab()
         self._build_playlist_tab()
@@ -1335,6 +1352,59 @@ class FPRENApp(tk.Tk):
         tk.Button(btn_row, text="Submit", command=submit,
                   bg="#0d6efd", fg="white", font=("Arial", 9),
                   relief="flat", padx=10).pack(side="right")
+
+    # ══════════════════════════════════════════ BIDIRECTIONAL SYNC
+
+    def _on_tab_changed(self, event=None):
+        """Called when the user manually clicks a tab in the desktop app.
+        Posts the new active tab to /api/state so the web dashboard syncs."""
+        if self._suppress_tab_event:
+            return
+        try:
+            idx = self.nb.index(self.nb.select())
+        except Exception:
+            return
+        web_tab = _DESKTOP_TO_WEB_TAB.get(idx)
+        if web_tab:
+            def post():
+                api_post("/api/state", {"active_tab": web_tab})
+            threading.Thread(target=post, daemon=True).start()
+
+    def _switch_to_tab(self, idx):
+        """Switch notebook to tab index without triggering _on_tab_changed echo."""
+        self._suppress_tab_event = True
+        try:
+            self.nb.select(idx)
+        except Exception:
+            pass
+        self.after(200, lambda: setattr(self, '_suppress_tab_event', False))
+
+    def _start_sync_poll(self):
+        """Background thread that polls /api/sync every 5 s.
+        When the token changes it switches the desktop tab to match the web dashboard."""
+        def loop():
+            import time
+            while True:
+                time.sleep(5)
+                try:
+                    d = api_get("/api/sync")
+                    if not isinstance(d, dict) or d.get("_error"):
+                        continue
+                    tok = d.get("token")
+                    if self._sync_token is not None and tok != self._sync_token:
+                        remote_tab = d.get("active_tab")
+                        desktop_idx = _WEB_TO_DESKTOP_TAB.get(remote_tab)
+                        if desktop_idx is not None:
+                            try:
+                                cur_idx = self.nb.index(self.nb.select())
+                            except Exception:
+                                cur_idx = -1
+                            if cur_idx != desktop_idx:
+                                self.after(0, lambda i=desktop_idx: self._switch_to_tab(i))
+                    self._sync_token = tok
+                except Exception:
+                    pass
+        threading.Thread(target=loop, daemon=True).start()
 
     # ══════════════════════════════════════════ REFRESH LOOP
     def _refresh(self):

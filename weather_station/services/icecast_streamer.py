@@ -105,9 +105,9 @@ class IcecastStreamer:
             "-ac", "2",          # upmix mono → stereo (Icecast expects stereo)
             "-f", "mp3",
             "-content_type", "audio/mpeg",
-            "-ice_name", "FPREN - All Florida",
-            "-ice_description", "This is a stream of the FPREN Emergency Alerting System.",
-            "-ice_genre", "FPREN",
+            "-ice_name", "FPREN Florida Public Radio Emergency Network",
+            "-ice_description", "Florida Public Radio Emergency Network — 24/7 automated weather radio for Florida",
+            "-ice_genre", "Weather",
             self._icecast_url(),
         ]
         self._ffmpeg = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)

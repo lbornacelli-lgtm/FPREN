@@ -260,7 +260,7 @@ HTML_TEMPLATE = """
 <head>
 <meta charset="UTF-8">
 <link rel="icon" type="image/png" href="/static/fpren.png">
-<title>FPREN Alerts Dashboard</title>
+<title>FPREN | Florida Public Radio Emergency Network</title>
 <style>
   body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; }
 
@@ -483,7 +483,7 @@ HTML_TEMPLATE = """
 <header class="site-header">
   <img src="/static/fpren.png" alt="FPREN Logo">
   <div>
-    <div class="site-header-title">FPREN Alerts Dashboard</div>
+    <div class="site-header-title">FPREN — Florida Public Radio Emergency Network</div>
     <div class="site-header-sub">Weather &bull; Traffic &bull; Alerts &bull; Icecast</div>
   </div>
 </header>
@@ -1860,7 +1860,7 @@ LOGIN_HTML = """
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FPREN Login</title>
+  <title>FPREN | Florida Public Radio Emergency Network</title>
   <style>
     body { background:#1a1f24; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; font-family:Arial,sans-serif; }
     .card { background:#212529; border:1px solid #343a40; border-radius:8px; padding:40px; width:340px; }
@@ -1876,9 +1876,9 @@ LOGIN_HTML = """
 </head>
 <body>
   <div class="card">
-    <div class="logo">Florida Public Radio<br><strong style="font-size:1.1rem;color:#0dcaf0;">FPREN</strong><br>Emergency Network</div>
+    <div class="logo"><strong style="font-size:1.1rem;color:#0dcaf0;">FPREN</strong><br>Florida Public Radio Emergency Network</div>
     <h1>Sign In</h1>
-    <p>FPREN Weather Station Control</p>
+    <p>Florida Public Radio Emergency Network</p>
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
     <form method="POST">
       <label>Username</label>

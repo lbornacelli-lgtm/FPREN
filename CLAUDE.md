@@ -2,6 +2,12 @@
 
 FPREN (Florida Public Radio Emergency Network) is a 24/7 automated weather radio broadcast system serving Florida. It fetches NWS/IPAWS alerts, converts them to speech via TTS, manages a broadcast playlist per zone, and streams audio over Icecast. A Shiny dashboard provides real-time monitoring; a Flask app provides admin control.
 
+> **Naming convention:** The full name is **Florida Public Radio Emergency Network**, abbreviated as **FPREN**.
+> - Page `<title>` tags: `FPREN | Florida Public Radio Emergency Network`
+> - Headers / descriptions: `FPREN — Florida Public Radio Emergency Network`
+> - Stream metadata (`ice_name`): `FPREN Florida Public Radio Emergency Network`
+> - Short labels, buttons, tabs, code identifiers: `FPREN` alone is fine
+
 **Server:** `128.227.67.234` (UF VM, `/home/ufuser/Fpren-main`)
 **Shiny dashboard:** `http://128.227.67.234` → port 3838 via Nginx
 **Flask admin:** `http://128.227.67.234:5000` (login required)

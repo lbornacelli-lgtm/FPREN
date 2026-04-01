@@ -15,13 +15,13 @@ class Settings:
     ICECAST_MOUNT           = os.getenv("ICECAST_MOUNT", "/fpren")
     ICECAST_SOURCE_PASSWORD = os.getenv("ICECAST_SOURCE_PASSWORD", "fpren_source")
     ZONE_STREAMS = [
-        {'zone_id': 'all_florida',     'mount': '/fpren',           'port': 8000, 'name': 'FPREN All Florida'},
-        {'zone_id': 'north_florida',   'mount': '/north-florida',   'port': 8000, 'name': 'FPREN North Florida'},
-        {'zone_id': 'central_florida', 'mount': '/central-florida', 'port': 8000, 'name': 'FPREN Central Florida'},
-        {'zone_id': 'south_florida',   'mount': '/south-florida',   'port': 8000, 'name': 'FPREN South Florida'},
-        {'zone_id': 'miami',           'mount': '/miami',           'port': 8000, 'name': 'FPREN Miami'},
-        {'zone_id': 'jacksonville',    'mount': '/jacksonville',    'port': 8000, 'name': 'FPREN Jacksonville'},
-        {'zone_id': 'orlando',         'mount': '/orlando',         'port': 8000, 'name': 'FPREN Orlando'},
-        {'zone_id': 'tampa',           'mount': '/tampa',           'port': 8000, 'name': 'FPREN Tampa'},
-        {'zone_id': 'gainesville',     'mount': '/gainesville',     'port': 8000, 'name': 'FPREN Gainesville'},
+        {'zone_id': 'all_florida',     'mount': '/fpren',           'port': 8000, 'name': 'FPREN Florida Public Radio Emergency Network — All Florida'},
+        {'zone_id': 'north_florida',   'mount': '/north-florida',   'port': 8000, 'name': 'FPREN Florida Public Radio Emergency Network — North Florida'},
+        {'zone_id': 'central_florida', 'mount': '/central-florida', 'port': 8000, 'name': 'FPREN Florida Public Radio Emergency Network — Central Florida'},
+        {'zone_id': 'south_florida',   'mount': '/south-florida',   'port': 8000, 'name': 'FPREN Florida Public Radio Emergency Network — South Florida'},
+        {'zone_id': 'miami',           'mount': '/miami',           'port': 8000, 'name': 'FPREN Florida Public Radio Emergency Network — Miami'},
+        {'zone_id': 'jacksonville',    'mount': '/jacksonville',    'port': 8000, 'name': 'FPREN Florida Public Radio Emergency Network — Jacksonville'},
+        {'zone_id': 'orlando',         'mount': '/orlando',         'port': 8000, 'name': 'FPREN Florida Public Radio Emergency Network — Orlando'},
+        {'zone_id': 'tampa',           'mount': '/tampa',           'port': 8000, 'name': 'FPREN Florida Public Radio Emergency Network — Tampa'},
+        {'zone_id': 'gainesville',     'mount': '/gainesville',     'port': 8000, 'name': 'FPREN Florida Public Radio Emergency Network — Gainesville'},
     ]

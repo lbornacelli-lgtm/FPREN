@@ -122,11 +122,9 @@ All AI calls go through `services/ai_client.py` → UF LiteLLM endpoint.
 
 | Use case | File | Notes |
 |----------|------|-------|
-| Alert severity classification | `ai_classifier.py` | Not yet wired into main pipeline |
+| Alert severity classification | `ai_classifier.py` | Wired into `zone_alert_tts.py` — called once per alert before the zone loop; falls back to Piper on failure |
 | Broadcast script generation | `broadcast_generator.py` | Generates on-air copy from alert data |
 | Playlist decisions | `ai_playlist.py` | Chooses content mix for hour |
-
-**Not yet wired:** `ai_classifier.py` is implemented but not called from `zone_alert_tts.py`. TODO item.
 
 ---
 
@@ -135,7 +133,7 @@ All AI calls go through `services/ai_client.py` → UF LiteLLM endpoint.
 `services/icecast_streamer.py` spawns FFmpeg to push audio to Icecast.
 
 - **Default mount:** `/fpren` on port 8000 (All Florida stream)
-- **Multi-zone** mounts (ports 8001–8010) are stubbed and blocked by UF IT firewall — do not start them.
+- **Multi-zone** mounts all run on port 8000 via separate mount points (`/north-florida`, `/central-florida`, etc.) — managed by `fpren-multi-zone-streamer` service. UF IT firewall blocks external access to all zone mounts except `/fpren`.
 - Icecast admin: `http://localhost:8000/admin/` (credentials in Icecast config)
 
 ```bash
@@ -180,5 +178,5 @@ python3 scripts/seed_zone_definitions.py
 - Audio files in `audio/zones/` are cleaned up by `cleanup_manager.py` per zone rules. Files older than cleanup threshold are auto-deleted.
 - ElevenLabs is rate-limited and costs money — it is gated to critical alert event types in `elevenlabs_tts.py`.
 - Piper must be installed system-wide (`which piper` to verify). It is not a Python package.
-- `ai_classifier.py` is standalone — it is not yet imported by `zone_alert_tts.py`. Wire it in before relying on severity classification.
+- `ai_classifier.py` is wired into `zone_alert_tts.py` — called once per alert before the zone loop, with Piper fallback on failure.
 - The `fm_engine.py` is for hardware FM transmitter integration — not relevant for Icecast streaming path.

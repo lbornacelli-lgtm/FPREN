@@ -213,16 +213,18 @@ ICECAST_SOURCE_PASSWORD=fpren_source
 - **Flask login** uses MongoDB `users` collection with bcrypt. No default admin — seed via `mongosh` if locked out.
 - **Piper binary** must be on PATH. It is installed system-wide, not in venv.
 - **ElevenLabs** is only triggered for tornado/hurricane warnings. Never use it for routine obs — it costs money.
-- **`ai_classifier.py`** is implemented but not yet wired into `zone_alert_tts.py` — it is called separately.
+- **`ai_classifier.py`** is wired into `zone_alert_tts.py` — called once per alert before the zone loop; falls back to Piper on failure.
+- **`beacon-airport-delays`** service is enabled and running. FAA API (`soa.smext.faa.gov`) is unreachable from the UF VM due to outbound DNS/firewall restrictions — airport data stays empty until UF IT resolves this.
 
 ---
 
 ## Known Issues / TODO
 
 - [ ] Port 80/443 and zone stream mounts pending UF IT firewall approval
-- [ ] Wire `ai_classifier` into `zone_alert_tts.py` main pipeline
-- [ ] Fix Flask dashboard tab loading issue
-- [ ] Desktop app (`weather_rss/web/fpren_desktop.py`) tab sync
+- [ ] FAA API unreachable from UF VM — `beacon-airport-delays` runs but `airport_delays` MongoDB collection stays empty
+- [x] Wire `ai_classifier` into `zone_alert_tts.py` main pipeline
+- [x] Fix Flask dashboard tab loading issue (commit 6194bf8)
+- [x] Desktop app (`weather_rss/web/fpren_desktop.py`) tab sync (commit 5d2db81)
 
 ---
 

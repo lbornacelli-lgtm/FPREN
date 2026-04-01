@@ -38,6 +38,7 @@ from datetime import datetime, timezone, timedelta
 from pymongo import MongoClient
 
 from weather_station.core.tts_service import TTSService
+from weather_station.services import ai_classifier, elevenlabs_tts
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -430,8 +431,26 @@ def process_nws_alerts(db, zones: list, tts: TTSService, progress: dict = None):
         event    = alert.get("event", "Weather Alert")
         severity = alert.get("severity", "")
         folder   = _get_alert_folder(event, severity)
-        text     = _build_nws_text(alert)
         fname    = _safe_id(alert_id) + ".mp3"
+
+        # ── AI classification (once per alert, before zone loop) ──────────────
+        ai_severity    = None
+        use_elevenlabs = False
+        spoken_text    = _build_nws_text(alert)  # fallback always ready
+        try:
+            ai_result      = ai_classifier.process_alert(alert)
+            spoken_text    = ai_result["ai_text"]
+            ai_severity    = ai_result["ai_severity"]
+            use_elevenlabs = (ai_result["tts_engine"] == "elevenlabs")
+            logger.info(
+                "AI classified alert %s → severity=%s engine=%s",
+                alert_id, ai_severity, ai_result["tts_engine"],
+            )
+        except Exception as ai_exc:
+            logger.warning(
+                "AI classifier failed for alert %s: %s — using Piper fallback",
+                alert_id, ai_exc,
+            )
 
         for zone_id in target_zones:
             zp = _zone_progress(progress, zone_id) if progress is not None else None
@@ -460,25 +479,42 @@ def process_nws_alerts(db, zones: list, tts: TTSService, progress: dict = None):
                         pass
 
             try:
-                tts.say(text, output_file=audio_path)
+                engine_used = "Piper"
+                if use_elevenlabs:
+                    result = elevenlabs_tts.say(spoken_text, output_file=audio_path)
+                    if result:
+                        engine_used = "ElevenLabs"
+                    else:
+                        logger.warning(
+                            "ElevenLabs failed for %s/%s — falling back to Piper",
+                            zone_id, fname,
+                        )
+                        tts.say(spoken_text, output_file=audio_path)
+                else:
+                    tts.say(spoken_text, output_file=audio_path)
+
+                update_doc = {
+                    "source_type":  "nws_alert",
+                    "source_id":    alert_id,
+                    "zone":         zone_id,
+                    "alert_folder": folder,
+                    "wav_path":     audio_path,
+                    "event":        event,
+                    "severity":     severity,
+                    "area_desc":    alert.get("area_desc", ""),
+                    "fetched_at":   fetched_at,
+                    "generated_at": datetime.now(timezone.utc),
+                    "tts_engine":   engine_used,
+                }
+                if ai_severity is not None:
+                    update_doc["ai_severity"] = ai_severity
+
                 wavs_col.update_one(
                     {"source_type": "nws_alert", "source_id": alert_id, "zone": zone_id},
-                    {"$set": {
-                        "source_type":  "nws_alert",
-                        "source_id":    alert_id,
-                        "zone":         zone_id,
-                        "alert_folder": folder,
-                        "wav_path":     audio_path,
-                        "event":        event,
-                        "severity":     severity,
-                        "area_desc":    alert.get("area_desc", ""),
-                        "fetched_at":   fetched_at,
-                        "generated_at": datetime.now(timezone.utc),
-                        "tts_engine":   "Piper",
-                    }},
+                    {"$set": update_doc},
                     upsert=True,
                 )
-                logger.info("NWS MP3 [%s/%s] %s", zone_id, folder, fname)
+                logger.info("NWS MP3 [%s/%s] %s (engine=%s)", zone_id, folder, fname, engine_used)
                 if zp is not None:
                     zp["nws"]["done"] += 1
                     _write_progress(progress)

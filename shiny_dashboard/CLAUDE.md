@@ -127,10 +127,17 @@ sudo Rscript -e "install.packages('package_name', repos='https://cran.rstudio.co
 - `FL_COUNTY_LATLON` data.frame maps all 67 FL counties to approximate centroids
 
 ### Radar
-- `WX_RADAR` named vector: city ICAO → nearest NWS radar station (informational)
-- `wx_radar_url(lat, lon)` helper: builds Iowa State radar map URL for given coordinates
-- NWS `/ridge/lite/` endpoint returns 404 as of 2026 — Iowa State service is used instead
-- Radar modal: `id="radar-enlarge-modal"` Bootstrap modal + `showRadarModal()` JS function
+- **Florida state radar:** `output$fl_state_radar_img` renders one NWS WMS composite for the
+  full state (BBOX 24.5,-87.5 → 31.0,-80.0, 700×600 px). Placed in a collapsible box on the
+  wx_cities tab above the city grid.
+- **ZIP radar:** when a ZIP is looked up the nearest WX_CITIES city is found via Euclidean
+  distance on lat/lon; `nws_radar_url(lat, lon)` builds a 420×420 WMS image centred ±1.5° on
+  that city. Rendered inside the ZIP forecast panel (column 4).
+- **NWS WMS endpoint:** `opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows` —
+  EPSG:4326, WMS 1.3.0, BBOX order minLat,minLon,maxLat,maxLon. Returns 200 as of 2026-04-01.
+- NWS `/ridge/lite/` and Iowa State `mesonet.agron.iastate.edu` are NOT used (Iowa State removed,
+  RIDGE/lite returns 404).
+- JS `setInterval` (300 000 ms) cache-busts `fl-state-radar` and `zip-city-radar` img ids.
 
 ### City → ICAO Mapping
 `WX_CITIES` data.frame defined in server section maps 16 cities to their nearest ASOS stations, including lat/lon for radar centering.

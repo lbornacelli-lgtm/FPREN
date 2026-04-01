@@ -383,11 +383,12 @@ ui <- dashboardPage(
                   background: rgba(255,255,255,0.25); border-radius: 4px;
                   padding: 1px 6px; display: inline-block; margin-bottom: 4px; }
       .wx-time  { font-size: 11px; opacity: 0.7; margin-top: 6px; }
-      .wx-radar-thumb { width:200px; height:200px; object-fit:cover;
-                        border-radius:4px; margin-top:8px; cursor:pointer;
-                        border:1px solid rgba(255,255,255,0.3); display:block; }
-      .wx-radar-link  { display:block; text-align:center; }
-      .wx-radar-label { font-size:10px; opacity:0.7; text-align:center; margin-top:2px; }
+      .fl-radar-wrap { background:#0d1117; border-radius:6px; padding:8px; text-align:center; }
+      .fl-radar-wrap img { max-width:100%; border-radius:4px; display:block; margin:0 auto; }
+      .fl-radar-ts { font-size:10px; color:#aaa; margin-top:4px; }
+      .zip-radar-wrap { background:#0d1117; border-radius:6px; padding:8px;
+                        text-align:center; margin-top:10px; }
+      .zip-radar-wrap img { max-width:100%; border-radius:4px; display:block; margin:0 auto; }
       .zip-panel { background:#fff; border-radius:8px; padding:16px;
                    margin-bottom:18px; border-left:4px solid #3c8dbc; }
       .zip-panel h4  { margin-top:0; color:#3c8dbc; }
@@ -407,45 +408,19 @@ ui <- dashboardPage(
                                    line-height:1.3; }
     "))),
 
-    # ── NWS Radar enlargement modal (plain Bootstrap — works inside Shiny) ────
-    tags$div(id = "radar-enlarge-modal", class = "modal fade",
-      tabindex = "-1", role = "dialog",
-      tags$div(class = "modal-dialog modal-lg", role = "document",
-        tags$div(class = "modal-content",
-          tags$div(class = "modal-header",
-            tags$button(type = "button", class = "close",
-                        `data-dismiss` = "modal", HTML("&times;")),
-            tags$h4(class = "modal-title", id = "radar-enlarge-title", "NWS Radar")
-          ),
-          tags$div(class = "modal-body", style = "text-align:center; padding:20px;",
-            tags$img(id = "radar-enlarge-img", src = "",
-                     style = "max-width:100%; border-radius:4px;"),
-            tags$p(id = "radar-enlarge-ts",
-                   style = "font-size:11px; color:#888; margin-top:8px;", "")
-          ),
-          tags$div(class = "modal-footer",
-            tags$button(type = "button", class = "btn btn-default",
-                        `data-dismiss` = "modal", "Close")
-          )
-        )
-      )
-    ),
+    # ── Auto-refresh Florida state radar every 5 minutes ─────────────────────
     tags$script(HTML("
-      function showRadarModal(radarUrl, city) {
-        var ts = new Date().toLocaleTimeString();
-        var src = radarUrl + '?t=' + Date.now();
-        document.getElementById('radar-enlarge-img').src = src;
-        document.getElementById('radar-enlarge-title').innerText = city + ' — NWS Radar';
-        document.getElementById('radar-enlarge-ts').innerText = 'Loaded at ' + ts;
-        $('#radar-enlarge-modal').modal('show');
-      }
-      // Refresh radar thumbnails every 5 minutes client-side (cache-bust via &t=)
       setInterval(function() {
-        var ts = Date.now();
-        document.querySelectorAll('img.wx-radar-thumb').forEach(function(img) {
+        var img = document.getElementById('fl-state-radar');
+        if (img) {
           var base = img.getAttribute('data-src');
-          if (base) { img.src = base + '&t=' + ts; }
-        });
+          if (base) img.src = base + '&t=' + Date.now();
+        }
+        var img2 = document.getElementById('zip-city-radar');
+        if (img2) {
+          var base2 = img2.getAttribute('data-src');
+          if (base2) img2.src = base2 + '&t=' + Date.now();
+        }
       }, 300000);
     ")),
 
@@ -527,14 +502,20 @@ ui <- dashboardPage(
         ),
         uiOutput("wx_zip_error_ui"),
         uiOutput("wx_zip_forecast_ui"),
+        # Florida state radar
+        fluidRow(
+          box(title = tagList(icon("satellite-dish"), " Florida State Radar (NWS NEXRAD)"),
+              width = 12, status = "primary", solidHeader = TRUE, collapsible = TRUE,
+              uiOutput("fl_state_radar_img")
+          )
+        ),
         # 16-city grid header
         fluidRow(
           box(title = "Florida City Weather Conditions", width = 12, status = "primary",
               solidHeader = TRUE,
               fluidRow(
                 column(8, h5(icon("info-circle"),
-                  " Current METAR conditions — weather refreshes every 15 min,",
-                  " radar thumbnails refresh every 5 min")),
+                  " Current METAR conditions \u2014 auto-refreshes every 15 min")),
                 column(4, align = "right",
                   actionButton("btn_wx_refresh", "Refresh Now",
                                class = "btn-sm btn-default", icon = icon("sync")))
@@ -999,24 +980,29 @@ server <- function(input, output, session) {
     stringsAsFactors = FALSE
   )
 
-  # City ICAO → NWS radar station (informational; radar images use Iowa State service)
-  WX_RADAR <- c(
-    KJAX="KJAX", KTLH="KTLH", KGNV="KJAX",
-    KOCF="KTBW", KMCO="KMLB", KDAB="KMLB",
-    KTPA="KTBW", KSPG="KTBW", KSRQ="KTBW",
-    KRSW="KAMX", KMIA="KAMX", KFLL="KAMX",
-    KPBI="KAMX", KEYW="KAMX",
-    KPNS="KEVX", KECP="KEVX"
-  )
-
-  # Build radar thumbnail URL using Iowa State's public radar map service
-  # (NWS /ridge/lite/ endpoint returns 404 as of 2026)
-  wx_radar_url <- function(lat, lon) {
-    sprintf(
-      "https://mesonet.agron.iastate.edu/GIS/radmap.php?layers[]=nexrad&styles[]=default&width=250&height=250&zoom=7&lat=%.4f&lon=%.4f",
-      lat, lon
+  # NWS GeoServer WMS — base reflectivity radar image (returns 200, verified 2026-04-01)
+  # EPSG:4326 WMS 1.3.0 BBOX order: minLat,minLon,maxLat,maxLon
+  nws_radar_url <- function(lat, lon, half_deg = 1.5, px = 420) {
+    paste0(
+      "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows",
+      "?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap",
+      "&FORMAT=image%2Fpng&TRANSPARENT=true",
+      "&LAYERS=conus_bref_qcd&CRS=EPSG%3A4326",
+      "&WIDTH=", px, "&HEIGHT=", px,
+      "&BBOX=", lat - half_deg, ",", lon - half_deg,
+      ",",      lat + half_deg, ",", lon + half_deg
     )
   }
+
+  # Florida state-wide composite (W:700 H:600 matches ~7.5×6.5° aspect)
+  FL_RADAR_URL <- paste0(
+    "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows",
+    "?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap",
+    "&FORMAT=image%2Fpng&TRANSPARENT=true",
+    "&LAYERS=conus_bref_qcd&CRS=EPSG%3A4326",
+    "&WIDTH=700&HEIGHT=600",
+    "&BBOX=24.5,-87.5,31.0,-80.0"
+  )
 
   # Florida county approximate centroids (lat, lon) for NWS API lookups
   FL_COUNTY_LATLON <- data.frame(
@@ -1173,12 +1159,20 @@ server <- function(input, output, session) {
       }, error = function(e) { tryCatch(col$disconnect(), error=function(e2) NULL); NULL })
     }
 
+    # Find nearest WX_CITIES city for radar image
+    dists <- sqrt((WX_CITIES$lat - lat)^2 + (WX_CITIES$lon - lon)^2)
+    ni <- which.min(dists)
+    radar_city <- list(city = WX_CITIES$city[ni],
+                       lat  = WX_CITIES$lat[ni],
+                       lon  = WX_CITIES$lon[ni])
+
     wx_zip_error_rv("")
     wx_zip_forecast_rv(list(
-      location = result$location,
-      county   = county,
-      periods  = result$periods,
-      metar    = metar_row
+      location   = result$location,
+      county     = county,
+      periods    = result$periods,
+      metar      = metar_row,
+      radar_city = radar_city
     ))
   })
 
@@ -1243,15 +1237,48 @@ server <- function(input, output, session) {
       )
     })
 
+    # Radar image for nearest WX_CITIES city
+    rc <- data$radar_city
+    radar_img <- if (!is.null(rc)) {
+      r_url <- nws_radar_url(rc$lat, rc$lon)
+      div(class = "zip-radar-wrap",
+        tags$img(
+          id         = "zip-city-radar",
+          src        = paste0(r_url, "&t=", as.integer(Sys.time())),
+          `data-src` = r_url,
+          alt        = paste0(rc$city, " area radar"),
+          style      = "max-width:420px;"
+        ),
+        div(class = "fl-radar-ts",
+          icon("satellite-dish"), " Nearest station: ", rc$city,
+          " \u2014 NWS NEXRAD \u2014 auto-refreshes every 5 min")
+      )
+    } else NULL
+
     div(class = "zip-panel",
       fluidRow(
-        column(12,
+        column(8,
           h4(icon("map-marker-alt"), " ", data$location, " — ", data$county, " County"),
           if (!is.null(cur_html)) cur_html,
           h5(icon("calendar-alt"), " 7-Day Forecast"),
           div(class = "zip-days-scroll", day_cards)
-        )
+        ),
+        column(4, radar_img)
       )
+    )
+  })
+
+  output$fl_state_radar_img <- renderUI({
+    div(class = "fl-radar-wrap",
+      tags$img(
+        id         = "fl-state-radar",
+        src        = paste0(FL_RADAR_URL, "&t=", as.integer(Sys.time())),
+        `data-src` = FL_RADAR_URL,
+        alt        = "Florida State NEXRAD Radar",
+        style      = "max-width:900px;"
+      ),
+      div(class = "fl-radar-ts",
+        icon("clock"), " NWS NEXRAD composite \u2014 auto-refreshes every 5 min")
     )
   })
 
@@ -1456,45 +1483,20 @@ server <- function(input, output, session) {
       cat <- if (!is.na(row$fltCat)) row$fltCat else "UNK"
       css_class <- cat_class(cat)
 
-      {
-        # Build radar URL from city coordinates (Iowa State public radar map)
-        city_row  <- WX_CITIES[WX_CITIES$icao == row$icao, ]
-        radar_url <- if (nrow(city_row) > 0 && !is.na(city_row$lat[1]))
-          wx_radar_url(city_row$lat[1], city_row$lon[1]) else NA
-        radar_stn <- if (row$icao %in% names(WX_RADAR)) WX_RADAR[[row$icao]] else ""
-        radar_html <- if (!is.na(radar_url)) {
-          js_call <- sprintf("showRadarModal('%s','%s')", radar_url, row$display_name)
-          tags$a(class = "wx-radar-link", href = "#",
-                 onclick = paste0(js_call, "; return false;"),
-            tags$img(
-              class = "wx-radar-thumb",
-              src   = paste0(radar_url, "&t=", as.integer(Sys.time())),
-              `data-src` = radar_url,
-              alt   = paste0(row$display_name, " radar"),
-              title = "Click to enlarge"
-            ),
-            tags$div(class = "wx-radar-label",
-              icon("expand"), " Click to enlarge",
-              if (nchar(radar_stn) > 0) paste0(" \u2014 ", radar_stn, " radar") else "")
-          )
-        } else NULL
-
-        column(3,
-          div(class = paste("wx-card", css_class),
-            div(class = "wx-city", row$display_name),
-            div(class = "wx-cat",  cat),
-            div(class = "wx-temp", temp_f),
-            div(class = "wx-feels", feels_str),
-            if (nchar(wx_desc) > 0) div(class = "wx-desc", wx_desc),
-            div(class = "wx-detail",
-              icon("wind"), wind_str, tags$br(),
-              icon("tint"), hum_str, tags$br(),
-              icon("eye"),  vis_str),
-            div(class = "wx-time", icon("clock"), " Obs: ", obs_str),
-            radar_html
-          )
+      column(3,
+        div(class = paste("wx-card", css_class),
+          div(class = "wx-city", row$display_name),
+          div(class = "wx-cat",  cat),
+          div(class = "wx-temp", temp_f),
+          div(class = "wx-feels", feels_str),
+          if (nchar(wx_desc) > 0) div(class = "wx-desc", wx_desc),
+          div(class = "wx-detail",
+            icon("wind"), wind_str, tags$br(),
+            icon("tint"), hum_str, tags$br(),
+            icon("eye"),  vis_str),
+          div(class = "wx-time", icon("clock"), " Obs: ", obs_str)
         )
-      }
+      )
     })
 
     # Split into rows of 4

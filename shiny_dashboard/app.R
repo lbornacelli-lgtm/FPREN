@@ -57,6 +57,274 @@ read_notify_log <- function(n = 20) {
 # ── MongoDB connections ───────────────────────────────────────────────────────
 MONGO_URI <- Sys.getenv("MONGO_URI", "mongodb://localhost:27017/")
 
+# ── Florida ZIP → County lookup ───────────────────────────────────────────────
+FLORIDA_COUNTIES_LIST <- c(
+  "Alachua","Baker","Bay","Bradford","Brevard","Broward","Calhoun","Charlotte",
+  "Citrus","Clay","Collier","Columbia","Miami-Dade","DeSoto","Dixie","Duval",
+  "Escambia","Flagler","Franklin","Gadsden","Gilchrist","Glades","Gulf","Hamilton",
+  "Hardee","Hendry","Hernando","Highlands","Hillsborough","Holmes","Indian River",
+  "Jackson","Jefferson","Lafayette","Lake","Lee","Leon","Levy","Liberty","Madison",
+  "Manatee","Marion","Martin","Monroe","Nassau","Okaloosa","Okeechobee","Orange",
+  "Osceola","Palm Beach","Pasco","Pinellas","Polk","Putnam","Saint Johns",
+  "Saint Lucie","Santa Rosa","Sarasota","Seminole","Sumter","Suwannee","Taylor",
+  "Union","Volusia","Wakulla","Walton","Washington"
+)
+
+# County → Icecast zone mapping (mirrors zone_definitions)
+COUNTY_TO_ZONE <- c(
+  "Alachua"="gainesville","Bradford"="gainesville",
+  "Baker"="jacksonville","Clay"="jacksonville","Duval"="jacksonville",
+  "Nassau"="jacksonville","Saint Johns"="jacksonville",
+  "Seminole"="orlando","Orange"="orlando","Osceola"="orlando",
+  "Hillsborough"="tampa","Pinellas"="tampa","Pasco"="tampa",
+  "Broward"="miami","Miami-Dade"="miami",
+  "Escambia"="north_florida","Santa Rosa"="north_florida","Okaloosa"="north_florida",
+  "Walton"="north_florida","Holmes"="north_florida","Washington"="north_florida",
+  "Bay"="north_florida","Jackson"="north_florida","Calhoun"="north_florida",
+  "Gulf"="north_florida","Franklin"="north_florida","Gadsden"="north_florida",
+  "Liberty"="north_florida","Leon"="north_florida","Wakulla"="north_florida",
+  "Jefferson"="north_florida","Madison"="north_florida","Taylor"="north_florida",
+  "Hamilton"="north_florida","Suwannee"="north_florida","Lafayette"="north_florida",
+  "Columbia"="north_florida","Union"="north_florida","Gilchrist"="north_florida",
+  "Dixie"="north_florida","Levy"="north_florida",
+  "Putnam"="north_florida","Flagler"="north_florida",
+  "Volusia"="central_florida","Lake"="central_florida","Marion"="central_florida",
+  "Citrus"="central_florida","Hernando"="central_florida","Sumter"="central_florida",
+  "Brevard"="central_florida","Indian River"="central_florida",
+  "Polk"="central_florida","Highlands"="central_florida","Hardee"="central_florida",
+  "Manatee"="central_florida","Sarasota"="central_florida",
+  "Charlotte"="south_florida","DeSoto"="south_florida","Lee"="south_florida",
+  "Collier"="south_florida","Hendry"="south_florida","Glades"="south_florida",
+  "Okeechobee"="south_florida","Martin"="south_florida","Palm Beach"="south_florida",
+  "Saint Lucie"="south_florida","Monroe"="south_florida"
+)
+
+# ZIP ranges: each row is c(from, to, county)
+# First matching range wins (specific ranges listed before broad ones)
+.fl_zip_data <- rbind(
+  # Alachua
+  c(32601,32699,"Alachua"),
+  # Baker
+  c(32040,32040,"Baker"),c(32063,32063,"Baker"),c(32067,32067,"Baker"),
+  c(32072,32072,"Baker"),c(32087,32087,"Baker"),
+  # Bay
+  c(32401,32417,"Bay"),c(32444,32444,"Bay"),
+  # Bradford
+  c(32042,32042,"Bradford"),c(32044,32044,"Bradford"),
+  c(32058,32058,"Bradford"),c(32083,32083,"Bradford"),c(32091,32091,"Bradford"),
+  # Brevard
+  c(32754,32754,"Brevard"),c(32775,32775,"Brevard"),
+  c(32899,32899,"Brevard"),c(32901,32999,"Brevard"),
+  # Broward
+  c(33004,33004,"Broward"),c(33008,33009,"Broward"),
+  c(33019,33029,"Broward"),c(33060,33093,"Broward"),
+  c(33301,33340,"Broward"),
+  # Calhoun
+  c(32421,32421,"Calhoun"),c(32424,32424,"Calhoun"),
+  c(32430,32430,"Calhoun"),c(32449,32449,"Calhoun"),
+  # Charlotte
+  c(33946,33955,"Charlotte"),c(33980,33983,"Charlotte"),
+  # Citrus
+  c(34428,34461,"Citrus"),
+  # Clay
+  c(32003,32003,"Clay"),c(32043,32043,"Clay"),
+  c(32065,32065,"Clay"),c(32068,32068,"Clay"),c(32073,32073,"Clay"),
+  # Collier
+  c(34101,34120,"Collier"),c(34133,34146,"Collier"),
+  # Columbia
+  c(32024,32025,"Columbia"),c(32038,32038,"Columbia"),
+  c(32055,32055,"Columbia"),c(32061,32061,"Columbia"),
+  # Miami-Dade
+  c(33010,33018,"Miami-Dade"),c(33030,33039,"Miami-Dade"),
+  c(33101,33200,"Miami-Dade"),c(33255,33261,"Miami-Dade"),
+  c(33265,33266,"Miami-Dade"),c(33269,33270,"Miami-Dade"),
+  c(33280,33280,"Miami-Dade"),c(33283,33283,"Miami-Dade"),
+  c(33296,33296,"Miami-Dade"),
+  # DeSoto
+  c(34266,34269,"DeSoto"),
+  # Dixie
+  c(32628,32628,"Dixie"),c(32648,32648,"Dixie"),c(32680,32680,"Dixie"),
+  # Duval (32004, 32099, 32201-32260)
+  c(32004,32004,"Duval"),c(32099,32099,"Duval"),c(32201,32260,"Duval"),
+  # Escambia
+  c(32501,32529,"Escambia"),c(32590,32599,"Escambia"),
+  # Flagler
+  c(32110,32110,"Flagler"),c(32136,32137,"Flagler"),c(32164,32164,"Flagler"),
+  # Franklin
+  c(32320,32323,"Franklin"),c(32328,32329,"Franklin"),c(32346,32346,"Franklin"),
+  # Gadsden
+  c(32324,32324,"Gadsden"),c(32330,32330,"Gadsden"),
+  c(32332,32333,"Gadsden"),c(32343,32343,"Gadsden"),c(32351,32353,"Gadsden"),
+  # Gilchrist
+  c(32619,32619,"Gilchrist"),c(32693,32693,"Gilchrist"),
+  # Glades
+  c(33430,33430,"Glades"),c(33471,33471,"Glades"),
+  # Gulf
+  c(32456,32457,"Gulf"),c(32465,32465,"Gulf"),
+  # Hamilton
+  c(32052,32053,"Hamilton"),c(32096,32096,"Hamilton"),
+  # Hardee
+  c(33834,33836,"Hardee"),c(33873,33873,"Hardee"),
+  # Hendry
+  c(33440,33440,"Hendry"),c(33935,33935,"Hendry"),
+  # Hernando
+  c(34601,34614,"Hernando"),
+  # Highlands
+  c(33825,33825,"Highlands"),c(33852,33876,"Highlands"),
+  # Hillsborough
+  c(33502,33511,"Hillsborough"),c(33527,33527,"Hillsborough"),
+  c(33534,33534,"Hillsborough"),c(33547,33550,"Hillsborough"),
+  c(33556,33556,"Hillsborough"),c(33563,33573,"Hillsborough"),
+  c(33578,33579,"Hillsborough"),c(33583,33587,"Hillsborough"),
+  c(33592,33598,"Hillsborough"),c(33601,33650,"Hillsborough"),
+  # Holmes
+  c(32425,32425,"Holmes"),
+  # Indian River
+  c(32948,32948,"Indian River"),c(32960,32968,"Indian River"),
+  # Jackson
+  c(32420,32420,"Jackson"),c(32423,32423,"Jackson"),
+  c(32426,32426,"Jackson"),c(32431,32432,"Jackson"),
+  c(32440,32443,"Jackson"),c(32445,32448,"Jackson"),c(32460,32460,"Jackson"),
+  # Jefferson
+  c(32336,32336,"Jefferson"),c(32344,32344,"Jefferson"),
+  c(32357,32357,"Jefferson"),c(32364,32364,"Jefferson"),
+  # Lafayette
+  c(32013,32013,"Lafayette"),c(32066,32066,"Lafayette"),
+  # Lake
+  c(32702,32702,"Lake"),c(32726,32727,"Lake"),c(32735,32737,"Lake"),
+  c(32756,32756,"Lake"),c(32767,32767,"Lake"),c(32776,32776,"Lake"),
+  c(32778,32778,"Lake"),c(32783,32784,"Lake"),
+  c(34711,34737,"Lake"),c(34748,34749,"Lake"),c(34753,34753,"Lake"),
+  c(34755,34756,"Lake"),c(34762,34762,"Lake"),c(34788,34788,"Lake"),c(34797,34797,"Lake"),
+  # Lee
+  c(33901,33945,"Lee"),c(33965,33976,"Lee"),c(33990,33999,"Lee"),
+  # Leon
+  c(32301,32399,"Leon"),
+  # Levy
+  c(32621,32621,"Levy"),c(32625,32626,"Levy"),c(32668,32668,"Levy"),
+  # Liberty
+  c(32314,32314,"Liberty"),c(32321,32321,"Liberty"),
+  c(32334,32335,"Liberty"),c(32360,32360,"Liberty"),
+  # Madison
+  c(32059,32059,"Madison"),c(32340,32341,"Madison"),c(32350,32350,"Madison"),
+  # Manatee
+  c(34201,34221,"Manatee"),c(34243,34243,"Manatee"),c(34251,34251,"Manatee"),
+  # Marion
+  c(32113,32113,"Marion"),c(32134,32134,"Marion"),c(32179,32179,"Marion"),
+  c(32195,32195,"Marion"),c(32617,32617,"Marion"),c(32686,32686,"Marion"),
+  c(34420,34432,"Marion"),c(34470,34491,"Marion"),
+  # Martin
+  c(34953,34957,"Martin"),c(34990,34997,"Martin"),
+  # Monroe
+  c(33001,33001,"Monroe"),c(33037,33037,"Monroe"),
+  c(33040,33045,"Monroe"),c(33050,33057,"Monroe"),
+  # Nassau
+  c(32009,32009,"Nassau"),c(32011,32011,"Nassau"),
+  c(32034,32034,"Nassau"),c(32046,32046,"Nassau"),c(32097,32097,"Nassau"),
+  # Okaloosa
+  c(32531,32532,"Okaloosa"),c(32536,32542,"Okaloosa"),
+  c(32544,32544,"Okaloosa"),c(32547,32549,"Okaloosa"),c(32564,32567,"Okaloosa"),
+  # Okeechobee
+  c(34972,34974,"Okeechobee"),
+  # Orange
+  c(32703,32703,"Orange"),c(32710,32710,"Orange"),c(32712,32712,"Orange"),
+  c(32719,32719,"Orange"),c(32732,32732,"Orange"),c(32739,32742,"Orange"),
+  c(32757,32760,"Orange"),c(32762,32762,"Orange"),c(32768,32768,"Orange"),
+  c(32777,32777,"Orange"),c(32789,32812,"Orange"),c(32814,32839,"Orange"),
+  c(32853,32862,"Orange"),c(32867,32869,"Orange"),c(32872,32872,"Orange"),
+  c(32877,32878,"Orange"),c(32883,32886,"Orange"),
+  c(34734,34734,"Orange"),c(34760,34761,"Orange"),
+  c(34777,34778,"Orange"),c(34787,34787,"Orange"),
+  # Osceola
+  c(34739,34739,"Osceola"),c(34741,34747,"Osceola"),
+  c(34769,34769,"Osceola"),c(34771,34773,"Osceola"),
+  # Palm Beach
+  c(33401,33499,"Palm Beach"),
+  # Pasco
+  c(33523,33526,"Pasco"),c(33535,33536,"Pasco"),
+  c(33539,33545,"Pasco"),c(33558,33559,"Pasco"),
+  c(33574,33574,"Pasco"),c(33576,33576,"Pasco"),
+  c(34637,34639,"Pasco"),c(34652,34660,"Pasco"),
+  c(34667,34669,"Pasco"),c(34679,34679,"Pasco"),
+  # Pinellas
+  c(33701,33716,"Pinellas"),c(33729,33731,"Pinellas"),
+  c(33733,33734,"Pinellas"),c(33736,33736,"Pinellas"),
+  c(33738,33738,"Pinellas"),c(33740,33742,"Pinellas"),
+  c(33744,33744,"Pinellas"),c(33747,33747,"Pinellas"),
+  c(33755,33784,"Pinellas"),c(33785,33786,"Pinellas"),
+  c(34677,34677,"Pinellas"),c(34680,34698,"Pinellas"),
+  # Polk
+  c(33801,33898,"Polk"),
+  # Putnam
+  c(32112,32112,"Putnam"),c(32131,32131,"Putnam"),c(32139,32139,"Putnam"),
+  c(32148,32149,"Putnam"),c(32177,32177,"Putnam"),c(32181,32181,"Putnam"),
+  # Saint Johns
+  c(32033,32033,"Saint Johns"),c(32080,32086,"Saint Johns"),
+  c(32092,32092,"Saint Johns"),c(32095,32095,"Saint Johns"),c(32259,32259,"Saint Johns"),
+  # Saint Lucie
+  c(34945,34946,"Saint Lucie"),c(34950,34952,"Saint Lucie"),
+  c(34958,34958,"Saint Lucie"),c(34981,34988,"Saint Lucie"),
+  # Santa Rosa
+  c(32530,32530,"Santa Rosa"),c(32533,32535,"Santa Rosa"),
+  c(32560,32563,"Santa Rosa"),c(32568,32571,"Santa Rosa"),
+  c(32578,32580,"Santa Rosa"),c(32583,32583,"Santa Rosa"),
+  # Sarasota
+  c(34228,34242,"Sarasota"),c(34272,34295,"Sarasota"),
+  # Seminole
+  c(32700,32701,"Seminole"),c(32704,32704,"Seminole"),
+  c(32707,32709,"Seminole"),c(32714,32714,"Seminole"),
+  c(32716,32716,"Seminole"),c(32718,32718,"Seminole"),
+  c(32730,32731,"Seminole"),c(32733,32733,"Seminole"),
+  c(32745,32746,"Seminole"),c(32747,32747,"Seminole"),
+  c(32750,32752,"Seminole"),c(32761,32761,"Seminole"),
+  c(32765,32766,"Seminole"),c(32769,32773,"Seminole"),c(32779,32782,"Seminole"),
+  # Sumter
+  c(33513,33513,"Sumter"),c(33538,33538,"Sumter"),
+  c(33585,33585,"Sumter"),c(34484,34484,"Sumter"),c(34785,34785,"Sumter"),
+  # Suwannee
+  c(32008,32008,"Suwannee"),c(32060,32060,"Suwannee"),
+  c(32062,32062,"Suwannee"),c(32064,32064,"Suwannee"),
+  # Taylor
+  c(32347,32348,"Taylor"),c(32356,32356,"Taylor"),c(32359,32359,"Taylor"),
+  # Union
+  c(32054,32054,"Union"),
+  # Volusia
+  c(32101,32109,"Volusia"),c(32114,32135,"Volusia"),
+  c(32141,32141,"Volusia"),c(32160,32163,"Volusia"),
+  c(32168,32169,"Volusia"),c(32174,32176,"Volusia"),
+  c(32180,32180,"Volusia"),c(32190,32190,"Volusia"),
+  c(32198,32198,"Volusia"),c(32706,32706,"Volusia"),
+  c(32713,32713,"Volusia"),c(32720,32725,"Volusia"),
+  c(32728,32728,"Volusia"),c(32738,32738,"Volusia"),
+  c(32744,32744,"Volusia"),c(32753,32753,"Volusia"),
+  c(32763,32764,"Volusia"),c(32774,32774,"Volusia"),
+  # Wakulla
+  c(32327,32327,"Wakulla"),c(32355,32355,"Wakulla"),
+  c(32358,32358,"Wakulla"),c(32361,32361,"Wakulla"),c(32395,32399,"Wakulla"),
+  # Walton
+  c(32435,32436,"Walton"),c(32439,32439,"Walton"),
+  c(32459,32461,"Walton"),c(32462,32464,"Walton"),c(32466,32466,"Walton"),
+  # Washington
+  c(32427,32428,"Washington"),c(32437,32438,"Washington"),c(32442,32442,"Washington")
+)
+FL_ZIP_RANGES <- data.frame(
+  from   = as.integer(.fl_zip_data[,1]),
+  to     = as.integer(.fl_zip_data[,2]),
+  county = .fl_zip_data[,3],
+  stringsAsFactors = FALSE
+)
+rm(.fl_zip_data)
+
+zip_to_florida_county <- function(zip_str) {
+  z <- trimws(as.character(zip_str))
+  if (!grepl("^\\d{5}$", z)) return(NA_character_)
+  n <- as.integer(z)
+  if (n < 32004L || n > 34997L) return(NA_character_)
+  idx <- which(FL_ZIP_RANGES$from <= n & FL_ZIP_RANGES$to >= n)
+  if (length(idx) == 0L) return(NA_character_)
+  FL_ZIP_RANGES$county[idx[1L]]
+}
+
 get_col <- function(collection) {
   tryCatch(
     mongo(collection = collection, db = "weather_rss", url = MONGO_URI),
@@ -74,7 +342,7 @@ ui <- dashboardPage(
     sidebarMenu(
       menuItem("Overview",        tabName = "overview",  icon = icon("tachometer-alt")),
       menuItem("FL Alerts",       tabName = "alerts",    icon = icon("exclamation-triangle")),
-      menuItem("Alachua County",  tabName = "alachua",   icon = icon("map-marker-alt")),
+      menuItem("County Alerts",    tabName = "county_alerts", icon = icon("map-marker-alt")),
       menuItem("Airport Delays",  tabName = "airports",  icon = icon("plane")),
       menuItem("Station Health",  tabName = "health",    icon = icon("heartbeat")),
       menuItem("Feed Status",     tabName = "feeds",     icon = icon("rss")),
@@ -100,7 +368,7 @@ ui <- dashboardPage(
       tabItem(tabName = "overview",
         fluidRow(
           valueBoxOutput("box_fl_alerts",      width = 3),
-          valueBoxOutput("box_alachua_alerts",  width = 3),
+          valueBoxOutput("box_county_alerts",   width = 3),
           valueBoxOutput("box_airport_delays",  width = 3),
           valueBoxOutput("box_wavs_generated",  width = 3)
         ),
@@ -143,16 +411,72 @@ ui <- dashboardPage(
         )
       ),
 
-      # ── Alachua County ──────────────────────────────────────────────────────
-      tabItem(tabName = "alachua",
+      # ── County Alerts ────────────────────────────────────────────────────────
+      tabItem(tabName = "county_alerts",
+        # Error / info message bar
+        uiOutput("ca_error_ui"),
+        # Search inputs
         fluidRow(
-          valueBoxOutput("box_alachua_active",  width = 4),
-          valueBoxOutput("box_alachua_extreme", width = 4),
-          valueBoxOutput("box_alachua_wavs",    width = 4)
+          box(title = "Search County Alerts", width = 12, status = "primary",
+              solidHeader = TRUE,
+              fluidRow(
+                column(3,
+                  textInput("ca_zip", label = "Florida ZIP Code (5 digits)",
+                            placeholder = "e.g. 32601")
+                ),
+                column(3,
+                  selectInput("ca_county", label = "Or Select County",
+                    choices  = c("-- Select a county --", FLORIDA_COUNTIES_LIST),
+                    selected = "-- Select a county --")
+                ),
+                column(2,
+                  br(),
+                  actionButton("btn_ca_search", "Search Alerts",
+                               class = "btn-primary btn-lg", icon = icon("search"))
+                ),
+                column(4,
+                  br(),
+                  uiOutput("ca_zip_hint")
+                )
+              )
+          )
         ),
+        # Summary value boxes
         fluidRow(
-          box(title = "Alachua County Alerts", width = 12, status = "warning",
-              solidHeader = TRUE, DTOutput("tbl_alachua"))
+          valueBoxOutput("ca_box_name",    width = 4),
+          valueBoxOutput("ca_box_total",   width = 4),
+          valueBoxOutput("ca_box_updated", width = 4)
+        ),
+        # Alerts DataTable
+        fluidRow(
+          box(title = "Active Alerts", width = 12, status = "warning",
+              solidHeader = TRUE,
+              DTOutput("tbl_ca_alerts"))
+        ),
+        # Full description of selected alert
+        fluidRow(
+          box(title = "Alert Description (click a row above)", width = 12, status = "info",
+              solidHeader = TRUE,
+              verbatimTextOutput("ca_alert_description"))
+        ),
+        # PDF + email export
+        fluidRow(
+          box(title = "Export Report", width = 12, status = "success",
+              solidHeader = TRUE,
+              fluidRow(
+                column(3,
+                  actionButton("btn_ca_pdf", "Generate PDF Report",
+                               class = "btn-primary", icon = icon("file-pdf"))
+                ),
+                column(3,
+                  actionButton("btn_ca_email", "Email Report",
+                               class = "btn-default", icon = icon("envelope"))
+                ),
+                column(6,
+                  verbatimTextOutput("ca_report_status")
+                )
+              )
+          )
         )
       ),
 
@@ -469,11 +793,11 @@ server <- function(input, output, session) {
              color = if (n > 0) "red" else "green")
   })
 
-  output$box_alachua_alerts <- renderValueBox({
+  output$box_county_alerts <- renderValueBox({
     df <- alerts_data()
-    n  <- if (nrow(df) == 0 || !"area_desc" %in% names(df)) 0
-          else sum(grepl("alachua", df$area_desc, ignore.case = TRUE), na.rm = TRUE)
-    valueBox(n, "Alachua Alerts", icon = icon("map-marker-alt"),
+    n  <- if (nrow(df) == 0 || !"source" %in% names(df)) 0
+          else sum(grepl("^county_nws:", df$source, ignore.case = TRUE), na.rm = TRUE)
+    valueBox(n, "County Alerts", icon = icon("map-marker-alt"),
              color = if (n > 0) "orange" else "green")
   })
 
@@ -543,43 +867,276 @@ server <- function(input, output, session) {
 
   observeEvent(input$btn_refresh_alerts, { alerts_data() })
 
-  # ── Alachua tab ─────────────────────────────────────────────────────────────
+  # ── County Alerts tab ────────────────────────────────────────────────────────
 
-  alachua_df <- reactive({
-    df <- alerts_data()
-    if (nrow(df) == 0 || !"area_desc" %in% names(df)) return(data.frame())
-    df %>% filter(grepl("alachua", area_desc, ignore.case = TRUE))
+  ca_selected_county  <- reactiveVal(NULL)
+  ca_error_msg        <- reactiveVal("")
+  ca_report_status_rv <- reactiveVal("")
+
+  # ZIP input → auto-select county in dropdown
+  observeEvent(input$ca_zip, {
+    z <- trimws(input$ca_zip)
+    if (grepl("^\\d{5}$", z)) {
+      county <- zip_to_florida_county(z)
+      if (!is.na(county))
+        updateSelectInput(session, "ca_county", selected = county)
+    }
+  }, ignoreInit = TRUE)
+
+  # County dropdown → show a ZIP hint
+  output$ca_zip_hint <- renderUI({
+    county <- input$ca_county
+    if (is.null(county) || county == "-- Select a county --") return(NULL)
+    # Show first known ZIP in the ranges for this county
+    idx <- which(FL_ZIP_RANGES$county == county)
+    hint_zip <- if (length(idx) > 0)
+      sprintf("%05d", FL_ZIP_RANGES$from[idx[1]]) else "n/a"
+    tags$small(style = "color:#888",
+      icon("info-circle"), sprintf(" %s ZIP codes begin around: %s", county, hint_zip))
   })
 
-  output$box_alachua_active <- renderValueBox({
-    valueBox(nrow(alachua_df()), "Active Alachua Alerts",
-             icon = icon("exclamation-circle"),
-             color = if (nrow(alachua_df()) > 0) "red" else "green")
+  # Search button
+  observeEvent(input$btn_ca_search, {
+    ca_error_msg("")
+    z      <- trimws(input$ca_zip)
+    county <- input$ca_county
+
+    if (nchar(z) > 0) {
+      if (!grepl("^\\d{5}$", z)) {
+        ca_error_msg("Invalid ZIP code: must be exactly 5 digits.")
+        return()
+      }
+      resolved <- zip_to_florida_county(z)
+      if (is.na(resolved)) {
+        ca_error_msg(paste0(
+          "ZIP code ", z,
+          " is not a valid Florida ZIP code. Florida ZIPs range from 32004 to 34997."))
+        return()
+      }
+      ca_selected_county(resolved)
+    } else if (!is.null(county) && county != "-- Select a county --") {
+      ca_selected_county(county)
+    } else {
+      ca_error_msg("Please enter a Florida ZIP code or select a county.")
+    }
   })
 
-  output$box_alachua_extreme <- renderValueBox({
-    df <- alachua_df()
-    n  <- if (nrow(df) == 0 || !"severity" %in% names(df)) 0
-          else sum(tolower(df$severity) %in% c("extreme","severe"), na.rm = TRUE)
-    valueBox(n, "Extreme/Severe", icon = icon("bolt"),
+  # Error display
+  output$ca_error_ui <- renderUI({
+    msg <- ca_error_msg()
+    if (nchar(msg) == 0) return(NULL)
+    div(
+      style = paste(
+        "background-color:#c0392b; color:white; padding:10px 15px;",
+        "border-radius:4px; margin-bottom:12px; font-weight:bold;"
+      ),
+      icon("exclamation-circle"), " ", msg
+    )
+  })
+
+  # MongoDB query for county alerts (auto-refreshes every 60 s)
+  county_alerts_data <- reactive({
+    county <- ca_selected_county()
+    if (is.null(county)) return(data.frame())
+    invalidateLater(60000)
+    slug  <- tolower(gsub("[. ]", "_", gsub("\\.", "", county)))
+    query <- sprintf(
+      '{"$or":[{"area_desc":{"$regex":"%s","$options":"i"}},{"source":"county_nws:%s"}]}',
+      county, slug
+    )
+    col <- get_col("nws_alerts")
+    if (is.null(col)) return(data.frame())
+    tryCatch({
+      df <- col$find(query,
+        fields = '{"alert_id":1,"event":1,"headline":1,"severity":1,
+                   "area_desc":1,"sent":1,"expires":1,"source":1,
+                   "description":1,"fetched_at":1,"_id":0}')
+      col$disconnect()
+      df
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL)
+      data.frame()
+    })
+  })
+
+  # Zone audio files for this county
+  county_wavs_data <- reactive({
+    county <- ca_selected_county()
+    if (is.null(county)) return(data.frame())
+    invalidateLater(60000)
+    zone  <- COUNTY_TO_ZONE[county]
+    if (is.na(zone)) zone <- "all_florida"
+    col   <- get_col("zone_alert_wavs")
+    if (is.null(col)) return(data.frame())
+    q <- sprintf('{"zone":{"$in":["%s","all_florida"]}}', zone)
+    tryCatch({
+      df <- col$find(q,
+        fields = '{"zone":1,"event":1,"generated_at":1,"_id":0}',
+        sort   = '{"generated_at":-1}', limit = 20)
+      col$disconnect()
+      df
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL)
+      data.frame()
+    })
+  })
+
+  # Summary value boxes
+  output$ca_box_name <- renderValueBox({
+    county <- ca_selected_county()
+    valueBox(if (is.null(county)) "\u2014" else county,
+             "Selected County", icon = icon("map-marker-alt"), color = "blue")
+  })
+
+  output$ca_box_total <- renderValueBox({
+    df <- county_alerts_data()
+    n  <- nrow(df)
+    valueBox(n, "Active Alerts", icon = icon("exclamation-triangle"),
              color = if (n > 0) "red" else "green")
   })
 
-  output$box_alachua_wavs <- renderValueBox({
-    df <- wav_data()
-    # Alachua County is the gainesville zone; also include all_florida catch-all
-    n  <- if (nrow(df) == 0) 0
-          else nrow(df %>% filter(zone %in% c("gainesville","all_florida")))
-    valueBox(n, "Zone Audio Files", icon = icon("file-audio"), color = "blue")
+  output$ca_box_updated <- renderValueBox({
+    county_alerts_data()   # take dependency so box updates on refresh
+    valueBox(format(Sys.time(), "%H:%M:%S"), "Last Updated",
+             icon = icon("clock"), color = "blue")
   })
 
-  output$tbl_alachua <- renderDT({
-    df <- alachua_df()
-    if (nrow(df) == 0)
-      return(datatable(data.frame(Message = "No active Alachua County alerts")))
-    df <- df %>% select(any_of(c("event","severity","headline","area_desc","sent","source")))
-    datatable(df, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  # Alerts DataTable with severity color coding
+  output$tbl_ca_alerts <- renderDT({
+    df <- county_alerts_data()
+    if (is.null(ca_selected_county())) {
+      return(datatable(data.frame(
+        Message = "Enter a Florida ZIP code or select a county and click Search Alerts"
+      ), options = list(dom = "t"), rownames = FALSE))
+    }
+    if (nrow(df) == 0) {
+      ca_error_msg(paste0("No active alerts found for ", ca_selected_county(), "."))
+      return(datatable(data.frame(
+        Message = paste0("No active alerts found for ", ca_selected_county())
+      ), options = list(dom = "t"), rownames = FALSE))
+    }
+    ca_error_msg("")
+    display <- df %>%
+      select(any_of(c("event","severity","headline","area_desc","sent","expires","source"))) %>%
+      mutate(across(everything(), as.character))
+    datatable(
+      display,
+      selection = "single",
+      rownames  = FALSE,
+      options   = list(pageLength = 10, scrollX = TRUE)
+    ) %>%
+      formatStyle("severity",
+        backgroundColor = styleEqual(
+          c("Extreme","Severe","Moderate","Minor"),
+          c("#c0392b","#e67e22","#f39c12","#ecf0f1")),
+        color = styleEqual(
+          c("Extreme","Severe","Moderate","Minor"),
+          c("white","white","black","black")))
   })
+
+  # Full description of selected alert row
+  output$ca_alert_description <- renderText({
+    df  <- county_alerts_data()
+    sel <- input$tbl_ca_alerts_rows_selected
+    if (is.null(sel) || length(sel) == 0 || nrow(df) == 0)
+      return("Click an alert row above to view its full description.")
+    if (!"description" %in% names(df))
+      return("No description field available.")
+    desc <- df$description[sel]
+    if (is.na(desc) || nchar(trimws(desc)) == 0)
+      return("No description available for this alert.")
+    desc
+  })
+
+  # PDF generation
+  observeEvent(input$btn_ca_pdf, {
+    county <- ca_selected_county()
+    if (is.null(county)) {
+      showNotification("Search for a county first.", type = "warning")
+      return()
+    }
+    ca_report_status_rv("Generating PDF report\u2026 (this may take 30\u201360 s)")
+    tryCatch({
+      output_dir  <- "/home/ufuser/Fpren-main/reports/output"
+      dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+      timestamp   <- format(Sys.time(), "%Y%m%d_%H%M")
+      safe_county <- gsub("[^A-Za-z0-9]", "_", county)
+      output_file <- file.path(output_dir,
+        paste0("county_alerts_", safe_county, "_", timestamp, ".pdf"))
+      rmarkdown::render(
+        input       = "/home/ufuser/Fpren-main/reports/county_alerts_report.Rmd",
+        output_file = output_file,
+        params      = list(county_name = county,
+                           date        = format(Sys.Date(), "%Y-%m-%d"),
+                           mongo_uri   = MONGO_URI),
+        quiet = TRUE
+      )
+      ca_report_status_rv(paste0(
+        "Report saved: ", basename(output_file), "\n",
+        format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
+      showNotification(paste0("PDF saved: ", basename(output_file)), type = "message")
+    }, error = function(e) {
+      msg <- paste0("PDF error: ", conditionMessage(e))
+      ca_report_status_rv(msg)
+      showNotification(msg, type = "error")
+    })
+  })
+
+  # Email report
+  observeEvent(input$btn_ca_email, {
+    county <- ca_selected_county()
+    if (is.null(county)) {
+      showNotification("Search for a county first.", type = "warning")
+      return()
+    }
+    output_dir  <- "/home/ufuser/Fpren-main/reports/output"
+    safe_county <- gsub("[^A-Za-z0-9]", "_", county)
+    files <- list.files(output_dir,
+      pattern   = paste0("county_alerts_", safe_county, "_.*\\.pdf$"),
+      full.names = TRUE)
+    if (length(files) == 0) {
+      showNotification("No PDF found \u2014 generate it first.", type = "warning")
+      return()
+    }
+    latest_file <- files[which.max(file.mtime(files))]
+    ca_report_status_rv("Sending email\u2026")
+    tryCatch({
+      sc        <- tryCatch(
+        fromJSON("/home/ufuser/Fpren-main/weather_rss/config/smtp_config.json"),
+        error = function(e) list())
+      smtp_host <- sc$smtp_host %||% "smtp.ufl.edu"
+      smtp_port <- as.integer(sc$smtp_port %||% 25)
+      mail_from <- sc$mail_from %||% "lawrence.bornace@ufl.edu"
+      mail_to   <- sc$mail_to   %||% "lawrence.bornace@ufl.edu"
+      subject   <- sprintf("FPREN County Alert Report - %s - %s",
+                            county, format(Sys.Date(), "%Y-%m-%d"))
+      library(emayili)
+      em <- envelope() %>%
+        from(mail_from) %>%
+        to(mail_to) %>%
+        subject(subject) %>%
+        text(paste0(
+          "FPREN County Alert Report\n\n",
+          "County:    ", county, "\n",
+          "Date:      ", format(Sys.Date(), "%Y-%m-%d"), "\n",
+          "Generated: ", format(Sys.time(), "%Y-%m-%d %H:%M:%S UTC"), "\n\n",
+          "Please find the PDF report attached.\n\n",
+          "-- FPREN Automated Reporting System\n",
+          "   Florida Public Radio Emergency Network\n"
+        )) %>%
+        attachment(latest_file)
+      server(host = smtp_host, port = smtp_port, reuse = FALSE)(em, verbose = FALSE)
+      msg <- paste0("Email sent to ", mail_to, " at ", format(Sys.time(), "%H:%M:%S"))
+      ca_report_status_rv(msg)
+      showNotification(msg, type = "message")
+    }, error = function(e) {
+      msg <- paste0("Email error: ", conditionMessage(e))
+      ca_report_status_rv(msg)
+      showNotification(msg, type = "error")
+    })
+  })
+
+  output$ca_report_status <- renderText({ ca_report_status_rv() })
 
   # ── Airport tab ─────────────────────────────────────────────────────────────
 

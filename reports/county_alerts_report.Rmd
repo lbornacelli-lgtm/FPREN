@@ -1,0 +1,239 @@
+---
+title: "FPREN County Alert Report"
+subtitle: "Florida Public Radio Emergency Network — `r params$county_name` County"
+date: "Generated `r format(Sys.time(), '%B %d, %Y at %I:%M %p')`"
+geometry: "margin=1in"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    latex_engine: xelatex
+    keep_tex: false
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{xcolor}
+  - \usepackage{longtable}
+  - \definecolor{fprenblue}{RGB}{0, 70, 127}
+  - \definecolor{extremered}{RGB}{192, 57, 43}
+  - \definecolor{severeorange}{RGB}{230, 126, 34}
+  - \definecolor{moderateyellow}{RGB}{243, 156, 18}
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \fancyhead[L]{\textcolor{fprenblue}{\textbf{FPREN}}}
+  - \fancyhead[C]{\textcolor{fprenblue}{County Alert Report}}
+  - \fancyhead[R]{\textcolor{gray}{`r params$county_name` County}}
+  - \renewcommand{\headrulewidth}{0.4pt}
+params:
+  county_name: "Alachua"
+  date: ""
+  mongo_uri: "mongodb://localhost:27017/"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+
+suppressPackageStartupMessages({
+  library(mongolite)
+  library(dplyr)
+  library(lubridate)
+  library(knitr)
+  library(kableExtra)
+})
+
+get_col <- function(collection) {
+  tryCatch(
+    mongo(collection = collection, db = "weather_rss", url = params$mongo_uri),
+    error = function(e) NULL
+  )
+}
+
+county      <- params$county_name
+report_date <- if (nchar(params$date) > 0) params$date else format(Sys.Date(), "%Y-%m-%d")
+
+# Build slug for source match (mirrors county_rss_fetcher.py)
+slug <- tolower(gsub("[. ]", "_", gsub("\\.", "", county)))
+
+# Query: area_desc contains county name OR source = county_nws:{slug}
+query <- sprintf(
+  '{"$or":[{"area_desc":{"$regex":"%s","$options":"i"}},{"source":"county_nws:%s"}]}',
+  county, slug
+)
+
+col    <- get_col("nws_alerts")
+alerts <- if (!is.null(col)) {
+  tryCatch({
+    df <- col$find(query,
+      fields = '{"alert_id":1,"event":1,"headline":1,"severity":1,"urgency":1,
+                 "area_desc":1,"source":1,"sent":1,"expires":1,
+                 "description":1,"fetched_at":1,"_id":0}')
+    col$disconnect()
+    df
+  }, error = function(e) { tryCatch(col$disconnect(), error=function(e2) NULL); data.frame() })
+} else data.frame()
+
+# Normalise timestamps to ET display strings
+fmt_ts <- function(x) {
+  if (is.null(x) || length(x) == 0) return(rep("—", length(x)))
+  sapply(x, function(v) {
+    tryCatch(
+      format(as.POSIXct(v, tz = "UTC"), "%b %d %H:%M ET",
+             usetz = FALSE),
+      error = function(e) as.character(v)
+    )
+  })
+}
+
+n_total   <- nrow(alerts)
+n_extreme <- if (n_total > 0) sum(tolower(alerts$severity) %in% c("extreme","severe"), na.rm=TRUE) else 0
+n_mod     <- if (n_total > 0) sum(tolower(alerts$severity) == "moderate", na.rm=TRUE) else 0
+n_minor   <- if (n_total > 0) sum(tolower(alerts$severity) == "minor", na.rm=TRUE) else 0
+
+# Check zone audio files
+wav_col  <- get_col("zone_alert_wavs")
+n_wavs   <- 0L
+if (!is.null(wav_col)) {
+  tryCatch({
+    wq <- sprintf('{"zone":{"$in":["%s","all_florida"]}}', slug)
+    wdf <- wav_col$find(wq, fields='{"_id":0,"zone":1}')
+    wav_col$disconnect()
+    n_wavs <- nrow(wdf)
+  }, error = function(e) tryCatch(wav_col$disconnect(), error=function(e2) NULL))
+}
+```
+
+\newpage
+
+# Executive Summary
+
+**County:** `r county`
+**Report Date:** `r report_date`
+**Generated:** `r format(Sys.time(), "%Y-%m-%d %H:%M:%S UTC")`
+**Data Source:** NOAA/NWS via FPREN MongoDB (`nws_alerts`)
+
+---
+
+```{r summary-table, results='asis'}
+cat(paste0(
+  "| Metric | Value |\n",
+  "|--------|-------|\n",
+  "| **County** | ", county, " |\n",
+  "| **Total Active Alerts** | **", n_total, "** |\n",
+  "| Extreme / Severe | **", n_extreme, "** |\n",
+  "| Moderate | ", n_mod, " |\n",
+  "| Minor | ", n_minor, " |\n",
+  "| Zone Audio Files | ", n_wavs, " |\n"
+))
+```
+
+```{r no-alerts, results='asis'}
+if (n_total == 0) {
+  cat("\n> **No active alerts found for ", county, " County at time of report generation.**\n", sep="")
+  knitr::knit_exit()
+}
+```
+
+\newpage
+
+# Active Alerts Summary
+
+```{r alerts-table}
+if (n_total > 0) {
+  display <- alerts %>%
+    select(any_of(c("event","severity","area_desc","sent","expires","source"))) %>%
+    mutate(
+      sent    = fmt_ts(sent),
+      expires = fmt_ts(expires),
+      severity = factor(severity,
+        levels = c("Extreme","Severe","Moderate","Minor","Unknown"), exclude = NULL)
+    ) %>%
+    arrange(severity) %>%
+    rename_with(~ c("Event","Severity","Area","Issued","Expires","Source")[seq_along(.)],
+                everything())
+
+  kable(display, booktabs = TRUE, longtable = TRUE,
+        caption = paste0("All active NWS alerts for ", county, " County")) %>%
+    kable_styling(
+      latex_options = c("striped","hold_position","repeat_header"),
+      font_size = 8
+    ) %>%
+    row_spec(which(display$Severity %in% c("Extreme","Severe")),
+             bold = TRUE, color = "white", background = "#c0392b") %>%
+    row_spec(which(display$Severity == "Moderate"),
+             bold = TRUE, color = "black", background = "#f39c12")
+}
+```
+
+\newpage
+
+# Alert Details
+
+```{r alert-details, results='asis'}
+if (n_total > 0) {
+  for (i in seq_len(nrow(alerts))) {
+    a <- alerts[i, ]
+
+    sev_label <- toupper(as.character(a$severity %||% "UNKNOWN"))
+    event_str <- as.character(a$event     %||% "Unknown Event")
+    hl_str    <- as.character(a$headline  %||% event_str)
+    area_str  <- as.character(a$area_desc %||% "—")
+    src_str   <- as.character(a$source    %||% "—")
+    sent_str  <- fmt_ts(a$sent)
+    exp_str   <- fmt_ts(a$expires)
+    desc_str  <- as.character(a$description %||% "No description available.")
+    # Sanitise for LaTeX
+    clean <- function(x) gsub("([#$%&_{}~^\\\\])", "\\\\\\1", x)
+
+    cat(sprintf(
+      "## Alert %d: %s\n\n",
+      i, clean(event_str)
+    ))
+    cat(paste0(
+      "**Severity:** ", sev_label, "  \n",
+      "**Headline:** ", clean(hl_str), "  \n",
+      "**Area:** ", clean(area_str), "  \n",
+      "**Source:** ", clean(src_str), "  \n",
+      "**Issued:** ", sent_str, "  \n",
+      "**Expires:** ", exp_str, "\n\n",
+      "**Description:**\n\n",
+      "\\begin{quote}\n",
+      gsub("\n", "  \n", clean(desc_str)),
+      "\n\\end{quote}\n\n",
+      "---\n\n"
+    ))
+  }
+}
+```
+
+\newpage
+
+# Severity Distribution
+
+```{r severity-dist, results='asis'}
+if (n_total > 0) {
+  sev_tbl <- alerts %>%
+    mutate(severity = as.character(severity)) %>%
+    count(severity, name = "Count") %>%
+    mutate(
+      Pct = paste0(round(Count / n_total * 100, 1), "%"),
+      severity = factor(severity,
+        levels = c("Extreme","Severe","Moderate","Minor","Unknown"), exclude = NULL)
+    ) %>%
+    arrange(severity) %>%
+    rename(Severity = severity)
+
+  kable(sev_tbl, booktabs = TRUE, align = c("l","r","r"),
+        caption = "Alert count by severity") %>%
+    kable_styling(latex_options = c("striped","hold_position"), font_size = 10)
+}
+```
+
+---
+
+*Report generated by FPREN R reporting system.*
+*Data source: NOAA/NWS via MongoDB `weather_rss.nws_alerts`.*
+*Server: `r Sys.info()[["nodename"]]` | R `r R.version.string`*

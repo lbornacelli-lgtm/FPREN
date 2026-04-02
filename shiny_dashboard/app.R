@@ -506,22 +506,7 @@ ui <- tagList(
   ),
 
   dashboardSidebar(width = 280,
-    sidebarMenu(
-      menuItem("Overview",              tabName = "overview",       icon = icon("tachometer-alt")),
-      menuItem("Weather Conditions",    tabName = "wx_cities",      icon = icon("cloud-sun")),
-      menuItem("FL Alerts",             tabName = "alerts",         icon = icon("exclamation-triangle")),
-      menuItem("Traffic Alerts",        tabName = "traffic_alerts", icon = icon("car-crash")),
-      menuItem("Traffic Analysis",      tabName = "traffic_analysis", icon = icon("chart-bar")),
-      menuItem("County Alerts",         tabName = "county_alerts",  icon = icon("map-marker-alt")),
-      menuItem("Airport Delays & Weather", tabName = "airports",   icon = icon("plane")),
-      menuItem("Upload Content",        tabName = "upload",         icon = icon("upload")),
-      menuItem("Reports",               tabName = "reports",        icon = icon("file-pdf")),
-      menuItem("Station Health",        tabName = "health",         icon = icon("heartbeat")),
-      menuItem("Icecast Streams",       tabName = "icecast",        icon = icon("broadcast-tower")),
-      menuItem("Feed Status",           tabName = "feeds",          icon = icon("rss")),
-      menuItem("Zones",                 tabName = "zones",          icon = icon("map")),
-      menuItem("Config",                tabName = "config",         icon = icon("cog"))
-    )
+    sidebarMenuOutput("sidebar_menu")
   ),
 
   dashboardBody(
@@ -1312,6 +1297,38 @@ server <- function(input, output, session) {
   output$is_admin <- reactive({ isTRUE(auth_rv$role == "admin") })
   outputOptions(output, "is_admin", suspendWhenHidden = FALSE)
 
+  # ── Role-based sidebar ────────────────────────────────────────────────────────
+  # viewer  : monitoring tabs only (read-only)
+  # operator: viewer + Upload, Reports, Station Health, Zones
+  # admin   : everything + Config / User Management
+  output$sidebar_menu <- renderMenu({
+    role <- if (!is.null(auth_rv$role)) auth_rv$role else "viewer"
+    viewer_items <- list(
+      menuItem("Overview",                 tabName = "overview",        icon = icon("tachometer-alt")),
+      menuItem("Weather Conditions",       tabName = "wx_cities",       icon = icon("cloud-sun")),
+      menuItem("FL Alerts",                tabName = "alerts",          icon = icon("exclamation-triangle")),
+      menuItem("Traffic Alerts",           tabName = "traffic_alerts",  icon = icon("car-crash")),
+      menuItem("Traffic Analysis",         tabName = "traffic_analysis",icon = icon("chart-bar")),
+      menuItem("County Alerts",            tabName = "county_alerts",   icon = icon("map-marker-alt")),
+      menuItem("Airport Delays & Weather", tabName = "airports",        icon = icon("plane")),
+      menuItem("Icecast Streams",          tabName = "icecast",         icon = icon("broadcast-tower")),
+      menuItem("Feed Status",              tabName = "feeds",           icon = icon("rss"))
+    )
+    operator_items <- list(
+      menuItem("Upload Content",  tabName = "upload",   icon = icon("upload")),
+      menuItem("Reports",         tabName = "reports",  icon = icon("file-pdf")),
+      menuItem("Station Health",  tabName = "health",   icon = icon("heartbeat")),
+      menuItem("Zones",           tabName = "zones",    icon = icon("map"))
+    )
+    admin_items <- list(
+      menuItem("Config",          tabName = "config",   icon = icon("cog"))
+    )
+    items <- viewer_items
+    if (role %in% c("operator", "admin")) items <- c(items, operator_items)
+    if (role == "admin")                  items <- c(items, admin_items)
+    do.call(sidebarMenu, items)
+  })
+
   output$login_attempts_msg <- renderUI({
     msg <- login_msg_rv()
     if (nchar(msg) == 0) return(NULL)
@@ -1379,7 +1396,7 @@ server <- function(input, output, session) {
     # Check 6-month inactivity
     if (!is.null(user$last_login) && !is.na(user$last_login)) {
       ll <- tryCatch(as.POSIXct(user$last_login, tz = "UTC"), error = function(e) NA)
-      if (!is.na(ll) && difftime(now_utc, ll, units = "days") > 183) {
+      if (!is.na(ll) && difftime(now_utc, ll, units = "days") > 180) {
         col3 <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
         if (!is.null(col3)) {
           tryCatch({
@@ -3541,6 +3558,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$btn_gen_report, {
+    if (!isTRUE(auth_rv$role %in% c("operator","admin"))) { rpt_status_msg("Access denied."); return() }
     rpt_status_msg("Generating report — this may take 30–60 seconds...")
     days  <- as.integer(input$rpt_days)
     zone  <- input$rpt_zone
@@ -3759,10 +3777,11 @@ server <- function(input, output, session) {
 
   output$user_mgmt_status <- renderText({ user_mgmt_msg() })
 
-  # Upload Content
+  # Upload Content (operator + admin only)
   CONTENT_ROOT <- "/home/ufuser/Fpren-main/weather_station/audio/content"
   upload_msg <- reactiveVal("")
   output$upload_file_list <- DT::renderDataTable({
+    if (!isTRUE(auth_rv$role %in% c("operator","admin"))) return(data.frame(Access="Operator or Admin role required."))
     input$btn_upload; input$upload_folder
     folder <- file.path(CONTENT_ROOT, input$upload_folder)
     if (!dir.exists(folder)) return(data.frame(Message="Folder not found"))
@@ -3772,6 +3791,7 @@ server <- function(input, output, session) {
                stringsAsFactors=FALSE)
   }, options=list(pageLength=20), rownames=FALSE)
   observeEvent(input$btn_upload, {
+    if (!isTRUE(auth_rv$role %in% c("operator","admin"))) { upload_msg("Access denied."); return() }
     req(input$upload_file)
     folder <- file.path(CONTENT_ROOT, input$upload_folder)
     dir.create(folder, showWarnings=FALSE, recursive=TRUE)

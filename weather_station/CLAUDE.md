@@ -42,7 +42,7 @@ Run by systemd service `beacon-station-engine`.
 | `broadcast_generator.py` | AI broadcast script → TTS audio (run by `fpren-broadcast-generator` service/timer) |
 | `elevenlabs_tts.py` | ElevenLabs TTS for critical alerts only |
 | `icecast_streamer.py` | FFmpeg → Icecast stream feeder |
-| `county_rss_fetcher.py` | NWS alerts by FL county FIPS code |
+| `county_rss_fetcher.py` | NWS alerts by FL county using NWS forecast zone codes (FLZ*) — tags alerts with `source:"county_nws:<county>"` for County Alerts tab |
 | `daily_report.py` | Daily alert summary emailer |
 | `multi_zone_streamer.py` | Multi-zone Icecast — one FFmpeg/FIFO/streamer per zone, all on port 8000 (run by `fpren-multi-zone-streamer` service; UF IT firewall blocks external access to zone mounts) |
 | `mongo_service.py` | MongoDB connection + alert queries |

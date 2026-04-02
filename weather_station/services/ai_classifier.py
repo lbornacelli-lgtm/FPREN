@@ -46,7 +46,7 @@ ALWAYS_CRITICAL = {
 
 # ── TTS voice routing ─────────────────────────────────────────────────────────
 
-TTS_ENGINE_GTTS       = "gtts"
+TTS_ENGINE_PIPER      = "piper"
 TTS_ENGINE_ELEVENLABS = "elevenlabs"
 
 
@@ -54,7 +54,7 @@ def route_tts_engine(severity_level: str) -> str:
     """Return TTS engine name based on severity level."""
     if severity_level in (SEVERITY_ELEVATED, SEVERITY_CRITICAL):
         return TTS_ENGINE_ELEVENLABS
-    return TTS_ENGINE_GTTS
+    return TTS_ENGINE_PIPER
 
 
 # ── System prompts ────────────────────────────────────────────────────────────

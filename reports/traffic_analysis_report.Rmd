@@ -1,0 +1,229 @@
+---
+title: "FPREN Traffic Analysis Report"
+subtitle: "Florida Public Radio Emergency Network — FL511 Traffic Incidents"
+date: "Generated `r format(Sys.time(), '%B %d, %Y at %I:%M %p')`"
+geometry: "margin=1in"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: false
+    latex_engine: xelatex
+    keep_tex: false
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{xcolor}
+  - \usepackage{longtable}
+  - \usepackage{array}
+  - \definecolor{fprenblue}{RGB}{0, 70, 127}
+  - \definecolor{majorred}{RGB}{192, 57, 43}
+  - \definecolor{intermorange}{RGB}{230, 126, 34}
+  - \definecolor{minoryellow}{RGB}{243, 156, 18}
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \fancyhead[L]{\textcolor{fprenblue}{\textbf{FPREN}}}
+  - \fancyhead[C]{\textcolor{fprenblue}{Traffic Analysis Report}}
+  - \fancyhead[R]{\textcolor{gray}{Florida Public Radio Emergency Network}}
+  - \renewcommand{\headrulewidth}{0.4pt}
+params:
+  data_rds: ""
+  filters:  "No filters applied"
+  date:     ""
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.width = 7, fig.height = 4)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+
+df <- readRDS(params$data_rds)
+```
+
+\textcolor{fprenblue}{\textbf{Florida Public Radio Emergency Network}} \hfill \textcolor{gray}{Automated Traffic Report}
+
+\vspace{4pt}
+\hrule
+\vspace{8pt}
+
+**Active Filters:** `r params$filters`
+
+**Report Date:** `r format(Sys.Date(), "%B %d, %Y")`
+
+**Total Incidents in Report:** `r nrow(df)`
+
+---
+
+## Summary Statistics
+
+```{r summary-boxes}
+total     <- nrow(df)
+n_major   <- sum(df$severity %in% c("Major","Intermediate"), na.rm=TRUE)
+n_closure <- sum(df$is_full_closure == TRUE, na.rm=TRUE)
+n_county  <- length(unique(df$county[!is.na(df$county)]))
+
+summary_df <- data.frame(
+  Metric = c("Total Incidents","Major / Intermediate","Full Closures","Counties Affected"),
+  Count  = c(total, n_major, n_closure, n_county)
+)
+kable(summary_df, booktabs=TRUE, col.names=c("Metric","Count"),
+      caption="Incident Summary") %>%
+  kable_styling(latex_options=c("hold_position"), full_width=FALSE) %>%
+  column_spec(2, bold=TRUE)
+```
+
+---
+
+## Incidents by Road (Top 20)
+
+```{r road-chart, fig.height=5}
+road_counts <- df %>%
+  filter(!is.na(road), road != "") %>%
+  count(road, sort=TRUE) %>%
+  slice_head(n=20) %>%
+  mutate(road = reorder(road, n))
+
+ggplot(road_counts, aes(x=n, y=road)) +
+  geom_col(fill="#3498db") +
+  geom_text(aes(label=n), hjust=-0.2, size=2.8) +
+  labs(x="Incidents", y=NULL, title="Top 20 Roads by Incident Count") +
+  theme_minimal(base_size=10) +
+  theme(plot.title=element_text(color="#00467f", face="bold"),
+        panel.grid.major.y=element_blank()) +
+  scale_x_continuous(expand=expansion(mult=c(0,0.12)))
+```
+
+---
+
+## Incident Type Breakdown
+
+```{r type-chart, fig.height=3.5}
+type_counts <- df %>%
+  filter(!is.na(type), type != "") %>%
+  count(type, sort=TRUE) %>%
+  mutate(pct = round(n/sum(n)*100,1),
+         label = paste0(type, "\n", n, " (", pct, "%)"))
+
+ggplot(type_counts, aes(x="", y=n, fill=type)) +
+  geom_col(width=1, color="white") +
+  coord_polar("y") +
+  labs(fill="Type", title="Incidents by Type") +
+  theme_void(base_size=9) +
+  theme(plot.title=element_text(color="#00467f", face="bold", hjust=0.5),
+        legend.text=element_text(size=7))
+```
+
+---
+
+## Incidents by County (Top 25)
+
+```{r county-chart, fig.height=5}
+county_counts <- df %>%
+  filter(!is.na(county), county != "") %>%
+  count(county, sort=TRUE) %>%
+  slice_head(n=25) %>%
+  mutate(county = reorder(county, n))
+
+ggplot(county_counts, aes(x=n, y=county, fill=n)) +
+  geom_col() +
+  geom_text(aes(label=n), hjust=-0.2, size=2.8) +
+  scale_fill_gradient(low="#fecc5c", high="#bd0026", guide="none") +
+  labs(x="Incidents", y=NULL, title="Top 25 Counties by Incident Count") +
+  theme_minimal(base_size=10) +
+  theme(plot.title=element_text(color="#00467f", face="bold"),
+        panel.grid.major.y=element_blank()) +
+  scale_x_continuous(expand=expansion(mult=c(0,0.12)))
+```
+
+---
+
+## Severity Breakdown by Road (Top 15)
+
+```{r severity-chart, fig.height=5}
+sev_counts <- df %>%
+  filter(!is.na(road), road != "", !is.na(severity)) %>%
+  count(road, severity) %>%
+  group_by(road) %>%
+  mutate(total=sum(n)) %>%
+  ungroup() %>%
+  filter(dense_rank(desc(total)) <= 15) %>%
+  mutate(road = reorder(road, total),
+         severity = factor(severity, levels=c("Major","Intermediate","Minor","N/A")))
+
+sev_colors <- c(Major="#e74c3c", Intermediate="#e67e22", Minor="#f1c40f", `N/A`="#95a5a6")
+
+ggplot(sev_counts, aes(x=n, y=road, fill=severity)) +
+  geom_col(position="stack") +
+  scale_fill_manual(values=sev_colors) +
+  labs(x="Incidents", y=NULL, fill="Severity",
+       title="Severity Distribution - Top 15 Roads") +
+  theme_minimal(base_size=10) +
+  theme(plot.title=element_text(color="#00467f", face="bold"),
+        panel.grid.major.y=element_blank())
+```
+
+---
+
+## Full Closures
+
+```{r closures-table}
+closures <- df %>%
+  filter(is_full_closure == TRUE) %>%
+  mutate(description = substr(gsub("<[^>]+>","",description), 1, 120)) %>%
+  select(any_of(c("severity","county","road","direction","type","description","last_updated"))) %>%
+  rename_with(~c("Severity","County","Road","Direction","Type","Description","Last Updated")[seq_along(.)], everything())
+
+if (nrow(closures) == 0) {
+  cat("No full closures in current data set.\n")
+} else {
+  kable(closures, booktabs=TRUE, longtable=TRUE,
+        caption=paste0("Full Closures (", nrow(closures), " total)")) %>%
+    kable_styling(latex_options=c("hold_position"), font_size=8) %>%
+    column_spec(1, width="1.5cm") %>%
+    column_spec(2, width="2cm") %>%
+    column_spec(3, width="2.5cm") %>%
+    column_spec(4, width="1.5cm") %>%
+    column_spec(5, width="2cm") %>%
+    column_spec(6, width="5cm")
+}
+```
+
+---
+
+## Incident Detail Table
+
+```{r detail-table}
+MAX_ROWS <- 250
+detail_all <- df %>%
+  select(any_of(c("severity","county","road","direction","type",
+                   "is_full_closure","dot_district","last_updated"))) %>%
+  rename_with(~c("Severity","County","Road","Direction","Type",
+                  "Full Closure","District","Last Updated")[seq_along(.)], everything()) %>%
+  arrange(desc(Severity), County)
+
+truncated <- nrow(detail_all) > MAX_ROWS
+detail    <- head(detail_all, MAX_ROWS)
+
+cap <- paste0("Incident Detail — ", nrow(detail), " of ", nrow(detail_all), " records",
+              if (truncated) paste0(" (top ", MAX_ROWS, " shown; download CSV for full data)") else "")
+
+kable(detail, booktabs=TRUE, longtable=TRUE, caption=cap) %>%
+  kable_styling(latex_options=c("hold_position"), font_size=7) %>%
+  column_spec(1, bold=TRUE, width="1.5cm") %>%
+  column_spec(2, width="2cm") %>%
+  column_spec(3, width="3cm") %>%
+  column_spec(4, width="1.5cm") %>%
+  column_spec(5, width="2.5cm") %>%
+  column_spec(6, width="1.2cm") %>%
+  column_spec(7, width="1.2cm") %>%
+  column_spec(8, width="2.5cm")
+```
+
+---
+
+\vspace{12pt}
+\hrule
+\vspace{4pt}
+\small\textcolor{gray}{Generated by FPREN — Florida Public Radio Emergency Network | Powered by FL511 data | `r format(Sys.time(), "%Y-%m-%d %H:%M:%S")`}

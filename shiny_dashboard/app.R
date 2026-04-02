@@ -1,6 +1,5 @@
 library(shiny)
 library(shinydashboard)
-library(shinymanager)
 library(bcrypt)
 library(mongolite)
 library(DT)
@@ -9,6 +8,9 @@ library(lubridate)
 library(rmarkdown)
 library(httr)
 library(jsonlite)
+library(plotly)
+library(forcats)
+library(leaflet)
 
 `%||%` <- function(a, b) if (!is.null(a) && nchar(a) > 0) a else b
 
@@ -353,11 +355,13 @@ ui <- dashboardPage(
       menuItem("Weather Conditions",    tabName = "wx_cities",      icon = icon("cloud-sun")),
       menuItem("FL Alerts",             tabName = "alerts",         icon = icon("exclamation-triangle")),
       menuItem("Traffic Alerts",        tabName = "traffic_alerts", icon = icon("car-crash")),
+      menuItem("Traffic Analysis",      tabName = "traffic_analysis", icon = icon("chart-bar")),
       menuItem("County Alerts",         tabName = "county_alerts",  icon = icon("map-marker-alt")),
       menuItem("Airport Delays & Weather", tabName = "airports",   icon = icon("plane")),
       menuItem("Upload Content",        tabName = "upload",         icon = icon("upload")),
       menuItem("Reports",               tabName = "reports",        icon = icon("file-pdf")),
       menuItem("Station Health",        tabName = "health",         icon = icon("heartbeat")),
+      menuItem("Icecast Streams",       tabName = "icecast",        icon = icon("broadcast-tower")),
       menuItem("Feed Status",           tabName = "feeds",          icon = icon("rss")),
       menuItem("Zones",                 tabName = "zones",          icon = icon("map")),
       menuItem("Config",                tabName = "config",         icon = icon("cog"))
@@ -411,14 +415,9 @@ ui <- dashboardPage(
                                    line-height:1.3; }
     "))),
 
-    # ── Auto-refresh Florida state radar every 5 minutes ─────────────────────
+    # ── Auto-refresh ZIP-area radar img every 5 minutes (cache-bust) ─────────
     tags$script(HTML("
       setInterval(function() {
-        var img = document.getElementById('fl-state-radar');
-        if (img) {
-          var base = img.getAttribute('data-src');
-          if (base) img.src = base + '&t=' + Date.now();
-        }
         var img2 = document.getElementById('zip-city-radar');
         if (img2) {
           var base2 = img2.getAttribute('data-src');
@@ -509,17 +508,22 @@ ui <- dashboardPage(
         fluidRow(
           box(title = tagList(icon("satellite-dish"), " Florida State Radar (NWS NEXRAD)"),
               width = 12, status = "primary", solidHeader = TRUE, collapsible = TRUE,
-              uiOutput("fl_state_radar_img")
+              leafletOutput("fl_state_radar_map", height = "330px"),
+              div(style = "font-size:11px; color:#888; margin-top:4px;",
+                icon("clock"), " NWS NEXRAD base reflectivity \u2014 auto-refreshes every 5 min")
           )
         ),
-        # 16-city grid header
+        # City grid header
         fluidRow(
           box(title = "Florida City Weather Conditions", width = 12, status = "primary",
               solidHeader = TRUE,
               fluidRow(
-                column(8, h5(icon("info-circle"),
+                column(7, h5(icon("info-circle"),
                   " Current METAR conditions \u2014 auto-refreshes every 15 min")),
-                column(4, align = "right",
+                column(5, align = "right",
+                  actionButton("btn_wx_toggle_cities", "Show All Cities",
+                               class = "btn-sm btn-info", icon = icon("map-marker-alt")),
+                  tags$span(" "),
                   actionButton("btn_wx_refresh", "Refresh Now",
                                class = "btn-sm btn-default", icon = icon("sync")))
               )
@@ -563,6 +567,79 @@ ui <- dashboardPage(
         )
       ),
 
+      # ── Traffic Analysis ─────────────────────────────────────────────────────
+      tabItem(tabName = "traffic_analysis",
+        fluidRow(
+          box(title = "Filters", width = 12, status = "primary", solidHeader = TRUE,
+              fluidRow(
+                column(3, selectInput("ta_road", "Road / Highway",
+                  choices = c("All Roads" = ""), selected = "")),
+                column(3, selectInput("ta_type", "Incident Type",
+                  choices = c("All Types" = ""), selected = "")),
+                column(3, selectInput("ta_severity", "Severity",
+                  choices = c("All" = "", "Major" = "Major",
+                              "Minor" = "Minor", "Intermediate" = "Intermediate"),
+                  selected = "")),
+                column(3, selectInput("ta_district", "DOT District",
+                  choices = c("All Districts" = ""), selected = ""))
+              )
+          )
+        ),
+        fluidRow(
+          valueBoxOutput("ta_box_total",    width = 3),
+          valueBoxOutput("ta_box_major",    width = 3),
+          valueBoxOutput("ta_box_closures", width = 3),
+          valueBoxOutput("ta_box_counties", width = 3)
+        ),
+        fluidRow(
+          box(title = "Incidents by Road (Top 20)", width = 6, status = "primary",
+              solidHeader = TRUE,
+              plotly::plotlyOutput("ta_plot_roads", height = "380px")),
+          box(title = "Incident Type Breakdown", width = 6, status = "info",
+              solidHeader = TRUE,
+              plotly::plotlyOutput("ta_plot_types", height = "380px"))
+        ),
+        fluidRow(
+          box(title = "Incidents by County", width = 6, status = "warning",
+              solidHeader = TRUE,
+              plotly::plotlyOutput("ta_plot_counties", height = "380px")),
+          box(title = "Severity Distribution by Road (Top 15)", width = 6,
+              status = "danger", solidHeader = TRUE,
+              plotly::plotlyOutput("ta_plot_severity", height = "380px"))
+        ),
+        fluidRow(
+          box(title = "County Hotspot Map", width = 12, status = "success",
+              solidHeader = TRUE,
+              p(tags$small("Circle size and color = incident count. Click a circle for details.")),
+              leaflet::leafletOutput("ta_map", height = "500px"))
+        ),
+        fluidRow(
+          box(title = "Export & Email Report", width = 12, status = "warning",
+              solidHeader = TRUE,
+              fluidRow(
+                column(5, textInput("ta_email", "Email Address",
+                  placeholder = "recipient@example.com", value = "")),
+                column(7, br(),
+                  actionButton("btn_ta_pdf",   "Generate PDF",
+                               class = "btn-primary", icon = icon("file-pdf")),
+                  tags$span(" "),
+                  actionButton("btn_ta_email", "Generate & Email PDF",
+                               class = "btn-success", icon = icon("envelope")),
+                  tags$span(" "),
+                  downloadButton("ta_download", "Download CSV",
+                                 class = "btn-default")
+                )
+              ),
+              verbatimTextOutput("ta_export_status")
+          )
+        ),
+        fluidRow(
+          box(title = "Detailed Data", width = 12, status = "primary",
+              solidHeader = TRUE,
+              DTOutput("ta_table"))
+        )
+      ),
+
       # ── County Alerts ────────────────────────────────────────────────────────
       tabItem(tabName = "county_alerts",
         # Error / info message bar
@@ -579,7 +656,7 @@ ui <- dashboardPage(
                 column(3,
                   selectInput("ca_county", label = "Or Select County",
                     choices  = c("-- Select a county --", FLORIDA_COUNTIES_LIST),
-                    selected = "-- Select a county --")
+                    selected = "Alachua")
                 ),
                 column(2,
                   br(),
@@ -666,6 +743,38 @@ ui <- dashboardPage(
         )
       ),
 
+      # ── Icecast Streams ─────────────────────────────────────────────────────
+      tabItem(tabName = "icecast",
+        fluidRow(
+          valueBoxOutput("box_ice_total_listeners", width = 3),
+          valueBoxOutput("box_ice_active_mounts",   width = 3),
+          valueBoxOutput("box_ice_peak_listeners",  width = 3),
+          valueBoxOutput("box_ice_server_uptime",   width = 3)
+        ),
+        fluidRow(
+          box(title = "Zone Stream Status", width = 12, status = "primary",
+              solidHeader = TRUE,
+              div(style = "float:right; margin-bottom:8px;",
+                actionButton("btn_ice_refresh", "Refresh Now",
+                             class = "btn-xs btn-default", icon = icon("sync"))),
+              div(style = "clear:both;"),
+              DTOutput("tbl_icecast_mounts")
+          )
+        ),
+        fluidRow(
+          box(title = "Server Info", width = 6, status = "info",
+              solidHeader = TRUE,
+              tableOutput("tbl_ice_server_info")
+          ),
+          box(title = "Stream URLs", width = 6, status = "success",
+              solidHeader = TRUE,
+              p(tags$small("Internal URLs (port 8000). External access restricted to ",
+                           tags$code("/fpren"), " mount by UF IT firewall.")),
+              uiOutput("ui_ice_stream_urls")
+          )
+        )
+      ),
+
       # ── Feed Status ─────────────────────────────────────────────────────────
       tabItem(tabName = "feeds",
         fluidRow(
@@ -728,7 +837,8 @@ ui <- dashboardPage(
               numericInput("cfg_smtp_port", "SMTP Port",   value = 25, min = 1, max = 65535),
               textInput("cfg_smtp_user",  "SMTP Username", value = ""),
               passwordInput("cfg_smtp_pass", "SMTP Password", value = ""),
-              textInput("cfg_mail_from",  "Mail From Address", value = ""),
+              textInput("cfg_mail_from",  "Mail From Address",      value = ""),
+              textInput("cfg_mail_to",    "Mail To (default recipient)", value = ""),
               checkboxInput("cfg_use_tls",  "Use STARTTLS",  value = FALSE),
               checkboxInput("cfg_use_auth", "Use SMTP Auth", value = FALSE),
               br(),
@@ -766,7 +876,11 @@ ui <- dashboardPage(
         fluidRow(
           box(title = "User Management", width = 12, status = "warning",
               solidHeader = TRUE,
+              p(tags$small("Click a row to select a user, then use Delete to remove them.")),
               DT::dataTableOutput("users_table"),
+              br(),
+              actionButton("btn_delete_user", "Delete Selected User",
+                           class = "btn-danger", icon = icon("user-minus")),
               hr(),
               h5("Add New User"),
               fluidRow(
@@ -800,10 +914,83 @@ ui <- dashboardPage(
           )
         )
       ),
+      # ── Zones / Playlist Config ──────────────────────────────────────────────
       tabItem(tabName = "zones",
         fluidRow(
-          box(title = "Zone Definitions", width = 12, status = "info",
+          box(title = "Zone", width = 3, status = "primary", solidHeader = TRUE,
+              selectInput("zone_pl_sel", NULL,
+                choices = c(
+                  "All Florida"    = "all_florida",
+                  "North Florida"  = "north_florida",
+                  "Central Florida"= "central_florida",
+                  "South Florida"  = "south_florida",
+                  "Tampa"          = "tampa",
+                  "Miami"          = "miami",
+                  "Orlando"        = "orlando",
+                  "Jacksonville"   = "jacksonville",
+                  "Gainesville"    = "gainesville"
+                ),
+                selected = "gainesville"),
+              uiOutput("zone_pl_info")
+          ),
+          box(title = "Normal Mode Playlist", width = 5, status = "success",
               solidHeader = TRUE,
+              p(tags$small(icon("info-circle"),
+                " These content types rotate in the regular hourly broadcast when no P1 interrupt is active.")),
+              checkboxGroupInput("normal_playlist_types", NULL,
+                choiceNames = list(
+                  "Fire / Red Flag Warnings",
+                  "Flood Alerts",
+                  "Freeze / Winter Alerts",
+                  "Fog Advisories",
+                  "Other Alerts",
+                  "Weather Reports",
+                  "Traffic Alerts",
+                  "Airport Weather",
+                  "Educational Content",
+                  "Imaging / Sweepers",
+                  "Top of Hour IDs"
+                ),
+                choiceValues = list(
+                  "fire", "flooding", "freeze", "fog", "other_alerts",
+                  "weather_report", "traffic", "airport_weather",
+                  "educational", "imaging", "top_of_hour"
+                ),
+                selected = c("fire","flooding","freeze","fog","other_alerts",
+                             "weather_report","traffic","airport_weather",
+                             "educational","imaging","top_of_hour")
+              ),
+              br(),
+              actionButton("btn_save_playlist_config", "Save Config",
+                           class = "btn-success", icon = icon("save")),
+              br(), br(),
+              verbatimTextOutput("playlist_save_status")
+          ),
+          box(title = "P1 Interrupt Mode", width = 4, status = "danger",
+              solidHeader = TRUE,
+              p(tags$small(icon("exclamation-triangle"),
+                " These types immediately preempt the normal playlist. Not configurable.")),
+              tags$ul(
+                tags$li(strong("Priority 1"), " — tornado emergency, flash flood emergency, extreme/severe"),
+                tags$li(strong("Tornado"), " — tornado warnings and watches"),
+                tags$li(strong("Severe Thunderstorm"), " — severe thunderstorm warnings"),
+                tags$li(strong("Hurricane / Tropical"), " — hurricane/tropical storm warnings, storm surge")
+              ),
+              hr(),
+              p(tags$small(icon("info-circle"),
+                " P1 audio also queues in the zone folder and plays in the next normal cycle."))
+          )
+        ),
+        fluidRow(
+          box(title = "Audio Queue — Current Files", width = 12, status = "info",
+              solidHeader = TRUE,
+              p(tags$small("Live file counts for this zone's audio folders. Refresh the page to update.")),
+              DT::dataTableOutput("zone_audio_inventory")
+          )
+        ),
+        fluidRow(
+          box(title = "Zone Definitions", width = 12, status = "primary",
+              solidHeader = FALSE, collapsible = TRUE, collapsed = TRUE,
               DT::dataTableOutput("zones_table")
           )
         )
@@ -904,38 +1091,8 @@ ui <- dashboardPage(
   )
 )
 
-# ── MongoDB credential check for shinymanager ────────────────────────────────
-check_credentials_mongo <- function(user, password) {
-  if (!grepl("^[A-Za-z0-9._@-]{1,64}$", user))
-    return(list(result = FALSE, message = "Invalid credentials."))
-  col <- tryCatch(
-    mongo(collection = "users", db = "weather_rss", url = MONGO_URI),
-    error = function(e) NULL
-  )
-  if (is.null(col))
-    return(list(result = FALSE, message = "Authentication service unavailable."))
-  doc <- tryCatch({
-    d <- col$find(
-      sprintf('{"username":"%s"}', gsub('"', '', user, fixed = TRUE)),
-      fields = '{"username":1,"password":1,"role":1,"_id":0}',
-      limit  = 1
-    )
-    col$disconnect()
-    d
-  }, error = function(e) {
-    tryCatch(col$disconnect(), error = function(e2) NULL)
-    data.frame()
-  })
-  if (nrow(doc) == 0 || !bcrypt::checkpw(password, doc$password[1]))
-    return(list(result = FALSE, message = "Invalid credentials."))
-  list(result = TRUE)
-}
-
 # ── Server ────────────────────────────────────────────────────────────────────
 server <- function(input, output, session) {
-
-  # Enforce login — blocks all server logic until authenticated
-  secure_server(check_credentials = check_credentials_mongo)
 
   # Auto-refresh timer
   timer <- reactiveTimer(60000)
@@ -1301,19 +1458,39 @@ server <- function(input, output, session) {
     )
   })
 
-  output$fl_state_radar_img <- renderUI({
-    div(class = "fl-radar-wrap",
-      tags$img(
-        id         = "fl-state-radar",
-        src        = paste0(FL_RADAR_URL, "&t=", as.integer(Sys.time())),
-        `data-src` = FL_RADAR_URL,
-        alt        = "Florida State NEXRAD Radar",
-        style      = "max-width:900px;"
-      ),
-      div(class = "fl-radar-ts",
-        icon("clock"), " NWS NEXRAD composite \u2014 auto-refreshes every 5 min")
-    )
+  radar_refresh_timer <- reactiveTimer(300000)  # 5 minutes
+
+  output$fl_state_radar_map <- renderLeaflet({
+    leaflet(options = leafletOptions(zoomControl = TRUE)) %>%
+      setView(lng = -83.5, lat = 27.5, zoom = 6) %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
+      addWMSTiles(
+        baseUrl = "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows",
+        layers  = "conus_bref_qcd",
+        options = WMSTileOptions(
+          format      = "image/png",
+          transparent = TRUE,
+          version     = "1.3.0",
+          opacity     = 0.8
+        )
+      )
   })
+
+  observeEvent(radar_refresh_timer(), {
+    leafletProxy("fl_state_radar_map") %>%
+      clearTiles() %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
+      addWMSTiles(
+        baseUrl = "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows",
+        layers  = "conus_bref_qcd",
+        options = WMSTileOptions(
+          format      = "image/png",
+          transparent = TRUE,
+          version     = "1.3.0",
+          opacity     = 0.8
+        )
+      )
+  }, ignoreInit = TRUE)
 
   # ── traffic data ─────────────────────────────────────────────────────────────
   traffic_timer <- reactiveTimer(120000)  # 2 minutes
@@ -1443,8 +1620,19 @@ server <- function(input, output, session) {
 
   # ── Weather Conditions tab ──────────────────────────────────────────────────
 
+  MAJOR_ICAOS <- c("KJAX", "KGNV", "KTPA", "KMCO", "KMIA")
+
+  show_all_cities <- reactiveVal(FALSE)
+
+  observeEvent(input$btn_wx_toggle_cities, {
+    show_all_cities(!show_all_cities())
+    updateActionButton(session, "btn_wx_toggle_cities",
+      label = if (show_all_cities()) "Show Major Cities" else "Show All Cities")
+  })
+
   output$wx_cities_grid <- renderUI({
     df <- wx_cities_data()
+    if (!show_all_cities()) df <- df[df$icao %in% MAJOR_ICAOS, ]
     if (nrow(df) == 0) {
       return(fluidRow(column(12,
         div(style = "padding: 30px; text-align: center; color: #666;",
@@ -1621,9 +1809,310 @@ server <- function(input, output, session) {
         color = styleEqual(c("Major","Minor"), c("white","white")))
   })
 
+  # ── Traffic Analysis tab ─────────────────────────────────────────────────────
+
+  ta_raw <- reactive({
+    traffic_data()   # reuse existing traffic reactive (auto-refreshes every 2 min)
+  })
+
+  # Populate filter dropdowns from live data
+  observe({
+    df <- ta_raw()
+    if (nrow(df) == 0) return()
+    roads <- sort(unique(df$road[!is.na(df$road) & df$road != ""]))
+    types <- sort(unique(df$type[!is.na(df$type) & df$type != ""]))
+    dists <- sort(unique(df$dot_district[!is.na(df$dot_district) & df$dot_district != ""]))
+    updateSelectInput(session, "ta_road",     choices = c("All Roads" = "", roads))
+    updateSelectInput(session, "ta_type",     choices = c("All Types" = "", types))
+    updateSelectInput(session, "ta_district", choices = c("All Districts" = "", dists))
+  })
+
+  ta_filtered <- reactive({
+    df <- ta_raw()
+    if (input$ta_road     != "") df <- df %>% filter(road        == input$ta_road)
+    if (input$ta_type     != "") df <- df %>% filter(type        == input$ta_type)
+    if (input$ta_severity != "") df <- df %>% filter(severity    == input$ta_severity)
+    if (input$ta_district != "") df <- df %>% filter(dot_district == input$ta_district)
+    df
+  })
+
+  output$ta_box_total <- renderValueBox({
+    valueBox(nrow(ta_filtered()), "Matching Incidents",
+             icon = icon("car"), color = "blue")
+  })
+  output$ta_box_major <- renderValueBox({
+    n <- sum(ta_filtered()$severity %in% c("Major","Intermediate"), na.rm = TRUE)
+    valueBox(n, "Major / Intermediate", icon = icon("exclamation-triangle"), color = "red")
+  })
+  output$ta_box_closures <- renderValueBox({
+    n <- sum(ta_filtered()$is_full_closure == TRUE, na.rm = TRUE)
+    valueBox(n, "Full Closures", icon = icon("road"), color = "orange")
+  })
+  output$ta_box_counties <- renderValueBox({
+    n <- length(unique(ta_filtered()$county[!is.na(ta_filtered()$county)]))
+    valueBox(n, "Counties Affected", icon = icon("map-marker-alt"), color = "green")
+  })
+
+  output$ta_plot_roads <- plotly::renderPlotly({
+    df <- ta_filtered()
+    if (nrow(df) == 0) return(plotly::plot_ly() %>% plotly::layout(title = "No data"))
+    counts <- df %>%
+      filter(!is.na(road), road != "") %>%
+      count(road, sort = TRUE) %>%
+      slice_head(n = 20) %>%
+      mutate(road = forcats::fct_reorder(road, n))
+    plotly::plot_ly(counts, x = ~n, y = ~road, type = "bar", orientation = "h",
+                    marker = list(color = "#3498db"),
+                    hovertemplate = "%{y}: %{x} incidents<extra></extra>") %>%
+      plotly::layout(
+        xaxis = list(title = "Incidents"),
+        yaxis = list(title = ""),
+        margin = list(l = 160)
+      )
+  })
+
+  output$ta_plot_types <- plotly::renderPlotly({
+    df <- ta_filtered()
+    if (nrow(df) == 0) return(plotly::plot_ly() %>% plotly::layout(title = "No data"))
+    counts <- df %>%
+      filter(!is.na(type), type != "") %>%
+      count(type, sort = TRUE)
+    plotly::plot_ly(counts, labels = ~type, values = ~n, type = "pie",
+                    textinfo = "label+percent",
+                    hovertemplate = "%{label}: %{value} incidents<extra></extra>") %>%
+      plotly::layout(showlegend = TRUE,
+                     legend = list(orientation = "v"))
+  })
+
+  output$ta_plot_counties <- plotly::renderPlotly({
+    df <- ta_filtered()
+    if (nrow(df) == 0) return(plotly::plot_ly() %>% plotly::layout(title = "No data"))
+    counts <- df %>%
+      filter(!is.na(county), county != "") %>%
+      count(county, sort = TRUE) %>%
+      slice_head(n = 25) %>%
+      mutate(county = forcats::fct_reorder(county, n))
+    plotly::plot_ly(counts, x = ~n, y = ~county, type = "bar", orientation = "h",
+                    marker = list(color = ~n, colorscale = "YlOrRd", showscale = TRUE),
+                    hovertemplate = "%{y} County: %{x} incidents<extra></extra>") %>%
+      plotly::layout(
+        xaxis = list(title = "Incidents"),
+        yaxis = list(title = ""),
+        margin = list(l = 130)
+      )
+  })
+
+  output$ta_plot_severity <- plotly::renderPlotly({
+    df <- ta_filtered()
+    if (nrow(df) == 0) return(plotly::plot_ly() %>% plotly::layout(title = "No data"))
+    counts <- df %>%
+      filter(!is.na(road), road != "", !is.na(severity)) %>%
+      count(road, severity) %>%
+      group_by(road) %>%
+      mutate(total = sum(n)) %>%
+      ungroup() %>%
+      filter(dense_rank(desc(total)) <= 15) %>%
+      mutate(road = forcats::fct_reorder(road, total))
+    sev_colors <- c(
+      "Major"        = "#e74c3c",
+      "Intermediate" = "#e67e22",
+      "Minor"        = "#f1c40f",
+      "N/A"          = "#95a5a6"
+    )
+    plotly::plot_ly(counts, x = ~n, y = ~road, color = ~severity,
+                    colors = sev_colors,
+                    type = "bar", orientation = "h",
+                    hovertemplate = "%{y} — %{data.name}: %{x}<extra></extra>") %>%
+      plotly::layout(
+        barmode = "stack",
+        xaxis = list(title = "Incidents"),
+        yaxis = list(title = ""),
+        legend = list(title = list(text = "Severity")),
+        margin = list(l = 160)
+      )
+  })
+
+  output$ta_map <- leaflet::renderLeaflet({
+    df <- ta_filtered()
+    base_map <- leaflet::leaflet() %>%
+      leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron) %>%
+      leaflet::setView(lng = -83.5, lat = 27.8, zoom = 7)
+    if (nrow(df) == 0) return(base_map)
+
+    county_counts <- df %>%
+      filter(!is.na(county), county != "") %>%
+      count(county, name = "incidents")
+    map_df <- FL_COUNTY_LATLON %>%
+      left_join(county_counts, by = "county") %>%
+      filter(!is.na(incidents))
+    if (nrow(map_df) == 0) return(base_map)
+
+    # Top incidents by type per county for popup detail
+    top_types <- df %>%
+      filter(!is.na(county), county != "", !is.na(type)) %>%
+      count(county, type, sort = TRUE) %>%
+      group_by(county) %>%
+      slice_head(n = 3) %>%
+      summarise(type_summary = paste(paste0(type, " (", n, ")"), collapse = "<br>"),
+                .groups = "drop")
+    map_df <- map_df %>% left_join(top_types, by = "county")
+
+    pal <- leaflet::colorNumeric(
+      palette = c("#ffffb2","#fecc5c","#fd8d3c","#f03b20","#bd0026"),
+      domain  = map_df$incidents
+    )
+    radius_scale <- function(n) scales::rescale(sqrt(n), to = c(8, 45))
+
+    base_map %>%
+      leaflet::addCircleMarkers(
+        data        = map_df,
+        lat         = ~lat,
+        lng         = ~lon,
+        radius      = ~radius_scale(incidents),
+        color       = "white",
+        weight      = 1,
+        fillColor   = ~pal(incidents),
+        fillOpacity = 0.85,
+        popup       = ~paste0(
+          "<b>", county, " County</b><br>",
+          "<b>", incidents, " incidents</b><br><hr>",
+          "<small>", ifelse(is.na(type_summary), "", type_summary), "</small>"
+        ),
+        label       = ~paste0(county, ": ", incidents, " incidents")
+      ) %>%
+      leaflet::addLegend(
+        position = "bottomright",
+        pal      = pal,
+        values   = map_df$incidents,
+        title    = "Incidents",
+        opacity  = 0.85
+      )
+  })
+
+  output$ta_table <- renderDT({
+    df <- ta_filtered()
+    if (nrow(df) == 0)
+      return(datatable(data.frame(Message = "No data matching filters")))
+    display <- df %>%
+      select(any_of(c("severity","county","road","direction","type",
+                       "is_full_closure","dot_district","description","last_updated"))) %>%
+      rename_with(~ c("Severity","County","Road","Direction","Type",
+                       "Full Closure","District","Description","Last Updated")[
+                        seq_along(.)], everything())
+    datatable(display,
+              options = list(pageLength = 25, scrollX = TRUE,
+                             columnDefs = list(list(width = "200px", targets = 7))),
+              rownames = FALSE) %>%
+      formatStyle("Severity",
+        backgroundColor = styleEqual(
+          c("Major","Intermediate","Minor"),
+          c("#c0392b","#e67e22","#f39c12")),
+        color = styleEqual(c("Major","Intermediate","Minor"),
+                           c("white","white","white")))
+  })
+
+  output$ta_download <- downloadHandler(
+    filename = function() paste0("fpren_traffic_analysis_", Sys.Date(), ".csv"),
+    content  = function(file) write.csv(ta_filtered(), file, row.names = FALSE)
+  )
+
+  ta_export_status <- reactiveVal("")
+  output$ta_export_status <- renderText({ ta_export_status() })
+
+  # Build a human-readable filter summary string
+  ta_filter_label <- reactive({
+    parts <- c(
+      if (input$ta_road     != "") paste0("Road: ",     input$ta_road),
+      if (input$ta_type     != "") paste0("Type: ",     input$ta_type),
+      if (input$ta_severity != "") paste0("Severity: ", input$ta_severity),
+      if (input$ta_district != "") paste0("District: ", input$ta_district)
+    )
+    if (length(parts) == 0) "No filters applied (all incidents)" else paste(parts, collapse=" | ")
+  })
+
+  # Shared PDF render helper — returns output file path or stops with error
+  ta_render_pdf <- function() {
+    df <- ta_filtered()
+    if (nrow(df) == 0) stop("No data matches the current filters — nothing to export.")
+    output_dir  <- "/home/ufuser/Fpren-main/reports/output"
+    dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+    timestamp   <- format(Sys.time(), "%Y%m%d_%H%M")
+    output_file <- file.path(output_dir, paste0("traffic_analysis_", timestamp, ".pdf"))
+    # Save filtered data to a temp RDS so the Rmd can read it
+    rds_path <- tempfile(fileext = ".rds")
+    saveRDS(df, rds_path)
+    withr::with_dir(tempdir(), rmarkdown::render(
+      input             = "/home/ufuser/Fpren-main/reports/traffic_analysis_report.Rmd",
+      output_file       = output_file,
+      intermediates_dir = tempdir(),
+      params            = list(data_rds = rds_path,
+                               filters  = ta_filter_label(),
+                               date     = format(Sys.Date(), "%Y-%m-%d")),
+      quiet = TRUE
+    ))
+    unlink(rds_path)
+    output_file
+  }
+
+  observeEvent(input$btn_ta_pdf, {
+    ta_export_status("Generating PDF\u2026 (30\u201360 seconds)")
+    tryCatch({
+      pdf_path <- ta_render_pdf()
+      ta_export_status(paste0("PDF saved: ", basename(pdf_path),
+                               "\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
+      showNotification(paste0("PDF saved: ", basename(pdf_path)), type = "message")
+    }, error = function(e) {
+      msg <- paste0("PDF error: ", conditionMessage(e))
+      ta_export_status(msg)
+      showNotification(msg, type = "error")
+    })
+  })
+
+  observeEvent(input$btn_ta_email, {
+    email_to <- trimws(input$ta_email)
+    if (email_to == "") {
+      showNotification("Enter an email address first.", type = "warning")
+      return()
+    }
+    ta_export_status("Generating PDF\u2026")
+    tryCatch({
+      pdf_path <- ta_render_pdf()
+      ta_export_status("PDF ready — sending email\u2026")
+      sc        <- tryCatch(
+        fromJSON("/home/ufuser/Fpren-main/weather_rss/config/smtp_config.json"),
+        error = function(e) list())
+      smtp_host <- sc$smtp_host %||% "smtp.ufl.edu"
+      smtp_port <- as.integer(sc$smtp_port %||% 25)
+      mail_from <- sc$mail_from %||% email_to
+      library(emayili)
+      em <- envelope() %>%
+        from(mail_from) %>%
+        to(email_to) %>%
+        subject(paste0("FPREN Traffic Analysis Report — ", format(Sys.Date(), "%Y-%m-%d"))) %>%
+        text(paste0(
+          "FPREN Traffic Analysis Report\n\n",
+          "Filters:   ", ta_filter_label(), "\n",
+          "Incidents: ", nrow(ta_filtered()), "\n",
+          "Generated: ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n\n",
+          "Please find the PDF report attached.\n\n",
+          "-- FPREN Automated Reporting System\n",
+          "   Florida Public Radio Emergency Network\n"
+        )) %>%
+        attachment(pdf_path)
+      server(host = smtp_host, port = smtp_port, reuse = FALSE)(em, verbose = FALSE)
+      msg <- paste0("Email sent to ", email_to, " at ", format(Sys.time(), "%H:%M:%S"))
+      ta_export_status(msg)
+      showNotification(msg, type = "message")
+    }, error = function(e) {
+      msg <- paste0("Error: ", conditionMessage(e))
+      ta_export_status(msg)
+      showNotification(msg, type = "error")
+    })
+  })
+
   # ── County Alerts tab ────────────────────────────────────────────────────────
 
-  ca_selected_county  <- reactiveVal(NULL)
+  ca_selected_county  <- reactiveVal("Alachua")
   ca_error_msg        <- reactiveVal("")
   ca_report_status_rv <- reactiveVal("")
 
@@ -1817,14 +2306,15 @@ server <- function(input, output, session) {
       safe_county <- gsub("[^A-Za-z0-9]", "_", county)
       output_file <- file.path(output_dir,
         paste0("county_alerts_", safe_county, "_", timestamp, ".pdf"))
-      rmarkdown::render(
-        input       = "/home/ufuser/Fpren-main/reports/county_alerts_report.Rmd",
-        output_file = output_file,
-        params      = list(county_name = county,
-                           date        = format(Sys.Date(), "%Y-%m-%d"),
-                           mongo_uri   = MONGO_URI),
+      withr::with_dir(tempdir(), rmarkdown::render(
+        input             = "/home/ufuser/Fpren-main/reports/county_alerts_report.Rmd",
+        output_file       = output_file,
+        intermediates_dir = tempdir(),
+        params            = list(county_name = county,
+                                 date        = format(Sys.Date(), "%Y-%m-%d"),
+                                 mongo_uri   = MONGO_URI),
         quiet = TRUE
-      )
+      ))
       ca_report_status_rv(paste0(
         "Report saved: ", basename(output_file), "\n",
         format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
@@ -2007,6 +2497,113 @@ server <- function(input, output, session) {
         fontWeight = styleEqual("ERROR", "bold"))
   })
 
+  # ── Icecast tab ─────────────────────────────────────────────────────────────
+
+  icecast_timer <- reactiveTimer(60000)  # auto-refresh every 60 s
+
+  icecast_data <- reactive({
+    input$btn_ice_refresh
+    icecast_timer()
+    tryCatch({
+      raw  <- readLines("http://localhost:8000/status-json.xsl", warn = FALSE)
+      json <- fromJSON(paste(raw, collapse = ""))
+      json$icestats
+    }, error = function(e) NULL)
+  })
+
+  # Normalise source list — Icecast returns a list when 1 mount, data.frame when >1
+  icecast_sources <- reactive({
+    ic <- icecast_data()
+    if (is.null(ic) || is.null(ic$source)) return(data.frame())
+    src <- ic$source
+    if (is.data.frame(src)) src
+    else as.data.frame(do.call(rbind, lapply(src, as.data.frame)), stringsAsFactors = FALSE)
+  })
+
+  output$box_ice_total_listeners <- renderValueBox({
+    src <- icecast_sources()
+    total <- if (nrow(src) == 0) 0 else sum(as.integer(src$listeners), na.rm = TRUE)
+    valueBox(total, "Total Listeners", icon = icon("headphones"), color = "blue")
+  })
+
+  output$box_ice_active_mounts <- renderValueBox({
+    src <- icecast_sources()
+    valueBox(nrow(src), "Active Mounts", icon = icon("broadcast-tower"), color = "green")
+  })
+
+  output$box_ice_peak_listeners <- renderValueBox({
+    src <- icecast_sources()
+    peak <- if (nrow(src) == 0) 0 else max(as.integer(src$listener_peak), na.rm = TRUE)
+    valueBox(peak, "Peak Listeners", icon = icon("chart-line"), color = "purple")
+  })
+
+  output$box_ice_server_uptime <- renderValueBox({
+    ic <- icecast_data()
+    uptime <- if (!is.null(ic) && !is.null(ic$server_start)) {
+      start <- tryCatch(as.POSIXct(ic$server_start_iso8601, format = "%Y-%m-%dT%H:%M:%S",
+                                   tz = "America/New_York"), error = function(e) NULL)
+      if (!is.null(start)) {
+        secs <- as.numeric(difftime(Sys.time(), start, units = "secs"))
+        hrs  <- floor(secs / 3600)
+        mins <- floor((secs %% 3600) / 60)
+        paste0(hrs, "h ", mins, "m")
+      } else "—"
+    } else "—"
+    valueBox(uptime, "Server Uptime", icon = icon("clock"), color = "yellow")
+  })
+
+  output$tbl_icecast_mounts <- renderDT({
+    src <- icecast_sources()
+    if (nrow(src) == 0)
+      return(datatable(data.frame(Message = "Icecast not reachable or no active mounts")))
+    # Extract mount path from listenurl
+    mount <- sub("http://[^/]+", "", src$listenurl)
+    df <- data.frame(
+      Mount        = mount,
+      Name         = sub("FPREN Florida Public Radio Emergency Network ?—? ?", "", src$server_name),
+      Listeners    = as.integer(src$listeners),
+      `Peak`       = as.integer(src$listener_peak),
+      `Stream Start` = format(as.POSIXct(src$stream_start_iso8601, format = "%Y-%m-%dT%H:%M:%S",
+                                          tz = "America/New_York"), "%m/%d %H:%M"),
+      Type         = src$server_type,
+      stringsAsFactors = FALSE, check.names = FALSE
+    )
+    df <- df[order(df$Mount), ]
+    datatable(df, rownames = FALSE,
+              options = list(pageLength = 15, scrollX = TRUE, dom = "t")) %>%
+      formatStyle("Listeners",
+        backgroundColor = styleInterval(c(0), c("transparent", "#dff0d8")))
+  })
+
+  output$tbl_ice_server_info <- renderTable({
+    ic <- icecast_data()
+    if (is.null(ic)) return(data.frame(Field = "Status", Value = "Icecast unreachable"))
+    data.frame(
+      Field = c("Server", "Host", "Location", "Admin", "Started"),
+      Value = c(
+        ic$server_id   %||% "—",
+        ic$host        %||% "—",
+        ic$location    %||% "—",
+        ic$admin       %||% "—",
+        ic$server_start %||% "—"
+      ),
+      stringsAsFactors = FALSE
+    )
+  }, striped = TRUE, hover = TRUE, bordered = FALSE, spacing = "s")
+
+  output$ui_ice_stream_urls <- renderUI({
+    src <- icecast_sources()
+    if (nrow(src) == 0) return(p("No active mounts."))
+    mount_paths <- sort(sub("http://[^/]+", "", src$listenurl))
+    base        <- "http://128.227.67.234:8000"
+    tags$ul(
+      lapply(mount_paths, function(m) {
+        url <- paste0(base, m)
+        tags$li(tags$a(href = url, target = "_blank", url))
+      })
+    )
+  })
+
   # ── Stream Alerts tab ───────────────────────────────────────────────────────
 
   stream_cfg_rv  <- reactiveVal(read_notify_config())
@@ -2107,6 +2704,7 @@ server <- function(input, output, session) {
     updateTextInput(session,    "cfg_smtp_user",  value = sc$smtp_user  %||% "")
     updateTextInput(session,    "cfg_smtp_pass",  value = sc$smtp_pass  %||% "")
     updateTextInput(session,    "cfg_mail_from",  value = sc$mail_from  %||% "")
+    updateTextInput(session,    "cfg_mail_to",    value = sc$mail_to    %||% "")
     updateCheckboxInput(session,"cfg_use_tls",    value = isTRUE(sc$use_tls))
     updateCheckboxInput(session,"cfg_use_auth",   value = isTRUE(sc$use_auth))
   })
@@ -2118,6 +2716,7 @@ server <- function(input, output, session) {
       smtp_user = trimws(input$cfg_smtp_user),
       smtp_pass = trimws(input$cfg_smtp_pass),
       mail_from = trimws(input$cfg_mail_from),
+      mail_to   = trimws(input$cfg_mail_to),
       use_tls   = isTRUE(input$cfg_use_tls),
       use_auth  = isTRUE(input$cfg_use_auth)
     )
@@ -2130,11 +2729,31 @@ server <- function(input, output, session) {
 
   observeEvent(input$btn_test_smtp, {
     cfg_smtp_status_msg("Sending test email...")
+    sc <- read_smtp_config()
+    mail_to   <- trimws(sc$mail_to   %||% "")
+    mail_from <- trimws(sc$mail_from %||% "")
+    smtp_host <- trimws(sc$smtp_host %||% "")
+    smtp_port <- as.integer(sc$smtp_port %||% 25)
+    if (mail_to == "" || smtp_host == "") {
+      cfg_smtp_status_msg("Error: save SMTP settings (host + mail_to) before sending a test.")
+      return()
+    }
     result <- tryCatch({
-      system2("/usr/bin/python3",
-              args = c("/home/ufuser/Fpren-main/scripts/stream_notify.py", "reboot"),
-              stdout = TRUE, stderr = TRUE, wait = TRUE)
-      "Test email sent via notify script."
+      em <- emayili::envelope(
+        to      = mail_to,
+        from    = if (mail_from != "") mail_from else mail_to,
+        subject = "FPREN SMTP Test",
+        text    = paste0("SMTP test from FPREN dashboard at ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
+      )
+      srv <- if (isTRUE(sc$use_tls)) {
+        emayili::server(host = smtp_host, port = smtp_port,
+                        username = sc$smtp_user %||% "", password = sc$smtp_pass %||% "",
+                        reuse = FALSE)
+      } else {
+        emayili::server(host = smtp_host, port = smtp_port, reuse = FALSE)
+      }
+      srv(em, verbose = FALSE)
+      paste0("Test email sent to ", mail_to, " at ", format(Sys.time(), "%H:%M:%S"))
     }, error = function(e) paste0("Error: ", conditionMessage(e)))
     cfg_smtp_status_msg(result)
   })
@@ -2214,14 +2833,15 @@ server <- function(input, output, session) {
         timestamp   <- format(Sys.time(), "%Y%m%d_%H%M")
         output_file <- file.path(output_dir,
                                   paste0("fpren_alert_report_", timestamp, ".pdf"))
-        rmarkdown::render(
-          input       = "/home/ufuser/Fpren-main/reports/fpren_alert_report.Rmd",
-          output_file = output_file,
-          params      = list(days_back  = days,
-                             zone_label = zone,
-                             mongo_uri  = MONGO_URI),
+        withr::with_dir(tempdir(), rmarkdown::render(
+          input             = "/home/ufuser/Fpren-main/reports/fpren_alert_report.Rmd",
+          output_file       = output_file,
+          intermediates_dir = tempdir(),
+          params            = list(days_back  = days,
+                                   zone_label = zone,
+                                   mongo_uri  = MONGO_URI),
           quiet = TRUE
-        )
+        ))
         msg <- paste0("Report saved: ", basename(output_file))
         if (email) {
           ret <- system2(
@@ -2243,27 +2863,71 @@ server <- function(input, output, session) {
   })
 
   # User Management
-  user_mgmt_msg <- reactiveVal("")
-  users_col <- get_col("users")
+  user_mgmt_msg  <- reactiveVal("")
+  user_mgmt_rv   <- reactiveVal(0)   # increment to force table refresh
+  users_col      <- get_col("users")
+
   output$users_table <- DT::renderDataTable({
-    input$btn_add_user
+    user_mgmt_rv()
     tryCatch({
       u <- users_col$find("{}", fields = '{"password":0,"_id":0}')
       if (nrow(u) == 0) return(data.frame(Message="No users found"))
       u
     }, error = function(e) data.frame(Error=conditionMessage(e)))
-  }, options=list(pageLength=10), rownames=FALSE)
+  }, selection = "single", options = list(pageLength=10), rownames = FALSE)
+
   observeEvent(input$btn_add_user, {
     req(input$new_user_name, input$new_user_pass)
     tryCatch({
-      users_col$insert(data.frame(username=trimws(input$new_user_name),
-        password=bcrypt::hashpw(input$new_user_pass),
-        role=input$new_user_role, active=TRUE, stringsAsFactors=FALSE))
+      users_col$insert(data.frame(
+        username = trimws(input$new_user_name),
+        password = bcrypt::hashpw(input$new_user_pass),
+        role     = input$new_user_role,
+        active   = TRUE,
+        stringsAsFactors = FALSE
+      ))
       user_mgmt_msg(paste("User", input$new_user_name, "created."))
       updateTextInput(session, "new_user_name", value="")
       updateTextInput(session, "new_user_pass", value="")
-    }, error=function(e) user_mgmt_msg(paste("Error:", conditionMessage(e))))
+      user_mgmt_rv(user_mgmt_rv() + 1)
+    }, error = function(e) user_mgmt_msg(paste("Error:", conditionMessage(e))))
   })
+
+  observeEvent(input$btn_delete_user, {
+    sel <- input$users_table_rows_selected
+    if (is.null(sel) || length(sel) == 0) {
+      user_mgmt_msg("Select a user row first, then click Delete.")
+      return()
+    }
+    tryCatch({
+      u <- users_col$find("{}", fields = '{"username":1,"role":1,"_id":0}')
+      target_user <- u$username[sel]
+      showModal(modalDialog(
+        title = "Confirm Delete",
+        tags$p("Are you sure you want to delete user ",
+               tags$strong(target_user), "?"),
+        tags$p(tags$small("This cannot be undone.")),
+        footer = tagList(
+          modalButton("Cancel"),
+          actionButton("btn_confirm_delete", "Delete",
+                       class = "btn-danger", icon = icon("trash"))
+        )
+      ))
+    }, error = function(e) user_mgmt_msg(paste("Error:", conditionMessage(e))))
+  })
+
+  observeEvent(input$btn_confirm_delete, {
+    removeModal()
+    sel <- input$users_table_rows_selected
+    tryCatch({
+      u <- users_col$find("{}", fields = '{"username":1,"_id":0}')
+      target_user <- u$username[sel]
+      users_col$remove(sprintf('{"username":"%s"}', target_user))
+      user_mgmt_msg(paste("User", target_user, "deleted."))
+      user_mgmt_rv(user_mgmt_rv() + 1)
+    }, error = function(e) user_mgmt_msg(paste("Error:", conditionMessage(e))))
+  })
+
   output$user_mgmt_status <- renderText({ user_mgmt_msg() })
 
   # Upload Content
@@ -2311,16 +2975,17 @@ server <- function(input, output, session) {
       safe_city   <- gsub("[^A-Za-z0-9]", "_", city_name)
       output_file <- file.path(output_dir,
         paste0("weather_trends_", safe_city, "_", timestamp, ".pdf"))
-      rmarkdown::render(
-        input       = "/home/ufuser/Fpren-main/reports/weather_trends_report.Rmd",
-        output_file = output_file,
-        params      = list(icao       = icao,
-                           city_name  = city_name,
-                           start_date = start_d,
-                           end_date   = end_d,
-                           mongo_uri  = MONGO_URI),
+      withr::with_dir(tempdir(), rmarkdown::render(
+        input             = "/home/ufuser/Fpren-main/reports/weather_trends_report.Rmd",
+        output_file       = output_file,
+        intermediates_dir = tempdir(),
+        params            = list(icao       = icao,
+                                 city_name  = city_name,
+                                 start_date = start_d,
+                                 end_date   = end_d,
+                                 mongo_uri  = MONGO_URI),
         quiet = TRUE
-      )
+      ))
       msg <- paste0("Report saved: ", basename(output_file))
       if (email) {
         sc        <- tryCatch(fromJSON("/home/ufuser/Fpren-main/weather_rss/config/smtp_config.json"),
@@ -2347,31 +3012,116 @@ server <- function(input, output, session) {
     })
   })
 
-  # Zones
-  zones_col <- get_col("zone_definitions")
-  output$zones_table <- DT::renderDataTable({
+  # ── Zones / Playlist Config ───────────────────────────────────────────────
+
+  output$zone_pl_info <- renderUI({
+    zone_id <- input$zone_pl_sel
+    col <- get_col("zone_definitions")
+    if (is.null(col)) return(NULL)
+    z <- tryCatch({
+      res <- col$find(sprintf('{"zone_id":"%s"}', zone_id))
+      col$disconnect()
+      res
+    }, error = function(e) { tryCatch(col$disconnect(), error=function(e2) NULL); data.frame() })
+    if (nrow(z) == 0) return(NULL)
+    row      <- z[1, ]
+    counties <- if (!is.null(row$counties[[1]])) paste(row$counties[[1]], collapse=", ") else "—"
+    tagList(
+      hr(),
+      p(strong("Display name:"), row$display_name),
+      p(strong("Counties:"), counties),
+      p(strong("Catch-all:"), if (isTRUE(row$catch_all)) "Yes" else "No")
+    )
+  })
+
+  observeEvent(input$zone_pl_sel, {
+    zone_id <- input$zone_pl_sel
+    col <- get_col("zone_definitions")
+    if (is.null(col)) return()
+    z <- tryCatch({
+      res <- col$find(sprintf('{"zone_id":"%s"}', zone_id),
+                      fields='{"normal_mode_types":1,"_id":0}')
+      col$disconnect()
+      res
+    }, error=function(e) { tryCatch(col$disconnect(), error=function(e2) NULL); data.frame() })
+    defaults <- c("fire","flooding","freeze","fog","other_alerts",
+                  "weather_report","traffic","airport_weather",
+                  "educational","imaging","top_of_hour")
+    selected <- if (nrow(z) > 0 && !is.null(z$normal_mode_types) &&
+                    length(z$normal_mode_types[[1]]) > 0)
+                  z$normal_mode_types[[1]] else defaults
+    updateCheckboxGroupInput(session, "normal_playlist_types", selected=selected)
+  }, ignoreInit=FALSE)
+
+  pl_save_status <- reactiveVal("")
+  output$playlist_save_status <- renderText({ pl_save_status() })
+
+  observeEvent(input$btn_save_playlist_config, {
+    zone_id <- input$zone_pl_sel
+    types   <- input$normal_playlist_types %||% character(0)
+    col <- get_col("zone_definitions")
+    if (is.null(col)) { pl_save_status("Error: MongoDB unavailable."); return() }
     tryCatch({
-      z <- zones_col$find("{}", fields='{"zone_id":1,"display_name":1,"catch_all":1,"_id":0}')
-      if (nrow(z)==0) return(data.frame(Message="No zones found"))
+      types_json <- paste0('["', paste(types, collapse='","'), '"]')
+      col$update(sprintf('{"zone_id":"%s"}', zone_id),
+                 sprintf('{"$set":{"normal_mode_types":%s}}', types_json))
+      col$disconnect()
+      pl_save_status(sprintf("Saved %d types for %s at %s",
+                             length(types), zone_id,
+                             format(Sys.time(), "%H:%M:%S")))
+    }, error=function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL)
+      pl_save_status(paste0("Save error: ", conditionMessage(e)))
+    })
+  })
+
+  output$zone_audio_inventory <- DT::renderDataTable({
+    zone_id    <- input$zone_pl_sel
+    zones_root <- "/home/ufuser/Fpren-main/weather_station/audio/zones"
+    zone_dir   <- file.path(zones_root, zone_id)
+    all_types  <- c("priority_1","tornado","thunderstorm","hurricane",
+                    "fire","flooding","freeze","fog","other_alerts",
+                    "weather_report","traffic","airport_weather",
+                    "educational","imaging","top_of_hour")
+    labels     <- c("Priority 1","Tornado","Severe Thunderstorm","Hurricane / Tropical",
+                    "Fire","Flooding","Freeze / Winter","Fog","Other Alerts",
+                    "Weather Reports","Traffic","Airport Weather",
+                    "Educational","Imaging","Top of Hour")
+    modes      <- c(rep("P1 Interrupt", 4), rep("Normal", 11))
+    rows <- mapply(function(ct, lbl, mode) {
+      folder <- file.path(zone_dir, ct)
+      files  <- if (dir.exists(folder))
+                  list.files(folder, pattern="\\.(mp3|wav|ogg)$", full.names=TRUE)
+                else character(0)
+      newest <- if (length(files) > 0)
+                  format(as.POSIXct(max(file.mtime(files))), "%Y-%m-%d %H:%M")
+                else "—"
+      data.frame(Category=lbl, Mode=mode, Files=length(files), Newest=newest,
+                 stringsAsFactors=FALSE)
+    }, all_types, labels, modes, SIMPLIFY=FALSE)
+    df <- do.call(rbind, rows)
+    DT::datatable(df, options=list(pageLength=20, dom="t"), rownames=FALSE) %>%
+      DT::formatStyle("Mode",
+        backgroundColor=DT::styleEqual(c("P1 Interrupt","Normal"),
+                                        c("#fadbd8","#d5f5e3")))
+  }, server=FALSE)
+
+  output$zones_table <- DT::renderDataTable({
+    col <- get_col("zone_definitions")
+    if (is.null(col)) return(data.frame(Message="MongoDB unavailable"))
+    tryCatch({
+      z <- col$find("{}", fields='{"zone_id":1,"display_name":1,"catch_all":1,"counties":1,"_id":0}')
+      col$disconnect()
+      if (nrow(z) == 0) return(data.frame(Message="No zones found"))
+      z$counties <- sapply(z$counties, function(x) paste(unlist(x), collapse=", "))
       z
-    }, error=function(e) data.frame(Error=conditionMessage(e)))
+    }, error=function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL)
+      data.frame(Error=conditionMessage(e))
+    })
   }, options=list(pageLength=15), rownames=FALSE)
 
 }
 
-ui <- secure_app(
-  ui,
-  background  = "#1a1f24",
-  tags_top    = tags$div(
-    style = "text-align:center; padding:10px 0 4px;",
-    tags$h3("FPREN", style = "color:#0dcaf0; margin:0 0 4px;"),
-    tags$p("Florida Public Radio Emergency Network",
-           style = "color:#adb5bd; font-size:0.88rem; margin:0;")
-  ),
-  tags_bottom = tags$p(
-    "Authorized personnel only.",
-    style = "text-align:center; font-size:0.78rem; color:#6c757d; margin-top:12px;"
-  )
-)
 
 shinyApp(ui, server)

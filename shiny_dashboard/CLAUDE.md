@@ -33,20 +33,23 @@ Or use the slash command: `/deploy-shiny`
 | 2 | Weather Conditions | `wx_cities` | Card grid of current METAR obs for 16 FL cities |
 | 3 | FL Alerts | `alerts` | All active NWS/IPAWS alerts with severity/source filters |
 | 4 | Traffic Alerts | `traffic_alerts` | FL511 traffic incidents with county/severity/type filters |
+| 4b | Traffic Analysis | `traffic_analysis` | Interactive statistical analysis of fl_traffic data — hotspot charts, county map, severity breakdown, CSV export |
 | 5 | County Alerts | `county_alerts` | ZIP/county search for per-county alerts + PDF/email export |
 | 6 | Airport Delays & Weather | `airports` | FAA delay status merged with METAR obs for FL airports |
 | 7 | Upload Content | `upload` | Upload MP3/WAV to broadcast content folders |
 | 8 | Reports | `reports` | Generate + email PDF alert summary reports |
 | 9 | Station Health | `health` | Recent audio files + system/MongoDB info |
-| 10 | Feed Status | `feeds` | RSS/IPAWS feed health table |
-| 11 | Zones | `zones` | Zone definitions + user management |
-| 12 | Config | `config` | SMTP settings + service status indicators |
+| 10 | Icecast Streams | `icecast` | Live mount status — listeners, uptime, stream URLs for all 9 zones |
+| 11 | Feed Status | `feeds` | RSS/IPAWS feed health table |
+| 12 | Zones | `zones` | Per-zone playlist config (normal mode types, P1 interrupt types) + audio queue file counts + zone definitions |
+| 13 | Config | `config` | SMTP settings + service status indicators |
 
 ## What the Dashboard Shows
 
 - Live NWS alert feed (reads `nws_alerts` MongoDB collection)
 - **Weather Conditions tab** — current METAR obs for 16 FL cities via `airport_metar` collection
 - **Traffic Alerts tab** — FL511 traffic incidents from `fl_traffic` collection (auto-refresh 2 min)
+- **Zones tab** — `zone_pl_sel` selects zone; `normal_playlist_types` checkboxGroupInput saved to `zone_definitions.normal_mode_types` in MongoDB; Audio Queue table reads live file counts from `weather_station/audio/zones/<zone_id>/`
 - **County Alerts tab** — dynamic per-county alert search with ZIP lookup, DataTable, PDF/email export
 - Zone audio status (reads `zone_alert_wavs`)
 - Icecast stream status

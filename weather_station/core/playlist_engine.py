@@ -26,7 +26,7 @@ from services.playback_tracker import PlaybackTracker
 
 logger = logging.getLogger(__name__)
 
-# Alert subfolders in priority order
+# Alert subfolders in full priority order (used when P1 content is present)
 ALERT_PRIORITY = [
     "priority_1",
     "tornado",
@@ -38,6 +38,14 @@ ALERT_PRIORITY = [
     "fog",
     "other_alerts",
 ]
+
+# P1 alert types — handled by interrupt_engine as immediate preemptions.
+# These are excluded from the normal-mode hourly playlist.
+P1_ALERT_TYPES = {"priority_1", "tornado", "thunderstorm", "hurricane"}
+
+# Normal-mode alert types — play in regular hourly rotation when no P1 is active.
+# Configurable per zone via zone_definitions.normal_mode_types in MongoDB.
+NORMAL_ALERT_TYPES = [t for t in ALERT_PRIORITY if t not in P1_ALERT_TYPES]
 
 # Default folder structure — override via constructor
 DEFAULT_FOLDERS = {
@@ -77,12 +85,25 @@ class PlaylistEngine:
         logger.debug("Found %d file(s) in %s", len(files), folder)
         return files
 
-    def build_playlist(self) -> list:
+    def build_playlist(self, normal_mode: bool = True,
+                       alert_types: list = None) -> list:
         """Build one-hour playlist in broadcast order.
+
+        Args:
+            normal_mode: If True (default), exclude P1 alert types
+                         (priority_1, tornado, thunderstorm, hurricane) —
+                         those are handled by interrupt_engine. Pass False
+                         to include all alert types.
+            alert_types: Override the alert type list. If None, uses
+                         NORMAL_ALERT_TYPES (when normal_mode=True) or
+                         ALERT_PRIORITY (when normal_mode=False).
 
         Returns:
             Ordered list of audio file paths.
         """
+        if alert_types is None:
+            alert_types = NORMAL_ALERT_TYPES if normal_mode else ALERT_PRIORITY
+
         playlist = []
 
         # 1. Top of hour
@@ -97,9 +118,9 @@ class PlaylistEngine:
         # 4. Traffic
         playlist.extend(self._list(self.folders["traffic"]))
 
-        # 5. Alerts in priority order
+        # 5. Alerts in configured order
         alerts_root = self.folders["alerts"]
-        for alert_type in ALERT_PRIORITY:
+        for alert_type in alert_types:
             folder = os.path.join(alerts_root, alert_type)
             files  = self._list(folder)
             if files:

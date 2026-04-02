@@ -81,9 +81,11 @@ Fpren-main/
 | `airport_metar` | Current METAR obs for 19 FL ASOS stations (updated every 15 min) |
 | `airport_delays` | FAA airport delay status |
 | `weather_history` | Hourly METAR snapshots for 16 FL cities — temp, wind, humidity, flight cat (90-day retention) |
-| `users` | Dashboard user accounts (bcrypt hashed) |
+| `users` | Dashboard user accounts (bcrypt hashed, extended with email/phone/verification fields) |
 | `feed_status` | RSS feed health status |
 | `dashboard_state` | Singleton `_id:"singleton"` — shared active_tab between web + desktop for bidirectional sync |
+| `user_audit_log` | Auth audit trail: login, logout, failed login, lock, add/delete user, password reset |
+| `notification_config` | Singleton `_id:"singleton"` — comma-separated `notify_emails` for user management alerts |
 
 ---
 
@@ -240,6 +242,43 @@ ICECAST_SOURCE_PASSWORD=fpren_source
 
 ---
 
+## Security Features (added 2026-04-02)
+
+### Shiny Dashboard Authentication
+The Shiny dashboard (`shiny_dashboard/app.R`, deployed to `/srv/shiny-server/fpren/app.R`) now requires user login. Previously it was publicly accessible.
+
+**Key components:**
+- Full-page login screen with UF/FPREN branding and AUP disclaimer (verbatim UF Acceptable Use Policy)
+- Account lockout after 3 failed attempts (24-hour lock, `locked_until` field in MongoDB)
+- 6-month inactivity auto-disable (checks `last_login` on every login)
+- 2-minute inactivity warning / 3-minute auto-logout via JS `setInterval`
+- First-login password change enforcement (`must_change_password` flag)
+- SMS phone verification via Twilio after first password change
+- Email verification via SMTP after phone verification
+- Welcome email after email verification (explains 6-month inactivity policy)
+- Forgot username/password flow (email-based 6-digit reset code)
+- Full audit log in `user_audit_log` MongoDB collection
+
+**Admin-only features (Config tab):**
+- Enhanced user table: username, email, phone, role, active, email_verified, phone_verified, last_login, created_at, created_by
+- Add User form: email + phone required; invite email sent with temp password
+- Delete User with confirm modal and audit logging
+- Notification email config (stored in `notification_config` collection)
+
+**New R packages required:**
+```r
+sudo Rscript -e "install.packages(c('shinyjs','digest','emayili'), repos='https://cran.rstudio.com/')"
+```
+
+**New MongoDB collections:** `user_audit_log`, `notification_config`
+
+**Extended `users` collection fields:** `email`, `phone`, `email_verified`, `phone_verified`, `must_change_password`, `failed_attempts`, `locked_until`, `last_login`, `created_by`, `invite_token`, `verify_code`, `verify_expires`, `reset_code`, `reset_expires`
+
+### email_utils.py HTML Email Support
+Added `send_html_email(subject, body_html, to=None)` to `weather_rss/email_utils.py`. Sends HTML emails with the UF FPREN banner footer. The `UF_BANNER_HTML` constant is also exported for use in other Python modules.
+
+---
+
 ## Known Issues / TODO
 
 - [ ] Port 80/443 and zone stream mounts pending UF IT firewall approval
@@ -247,6 +286,8 @@ ICECAST_SOURCE_PASSWORD=fpren_source
 - [x] Wire `ai_classifier` into `zone_alert_tts.py` main pipeline
 - [x] Fix Flask dashboard tab loading issue (commit 6194bf8)
 - [x] Desktop app (`weather_rss/web/fpren_desktop.py`) tab sync (commit 5d2db81)
+- [x] Add authentication gate to Shiny dashboard (2026-04-02)
+- [x] Add account lockout, inactivity timeout, first-login flow, SMS/email verification to Shiny (2026-04-02)
 
 ---
 

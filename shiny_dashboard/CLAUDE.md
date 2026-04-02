@@ -25,6 +25,70 @@ Or use the slash command: `/deploy-shiny`
 
 ---
 
+## Authentication & Security System
+
+Added 2026-04-02. The Shiny dashboard now requires login before displaying any content.
+
+### Architecture
+
+- **Login gate:** A full-page login screen (`div#login_screen`) overlays the dashboard (`div#main_dashboard`) on load. `shinyjs::hide/show` toggles between them.
+- **Auth state:** `auth_rv` reactiveValues stores `logged_in`, `username`, `role`, `email`, `phone`, `user_doc`.
+- **Admin visibility:** `output$is_admin` reactive (used with `conditionalPanel`) hides user management from non-admin users.
+
+### Login Security
+- Tracks `failed_attempts` per user in MongoDB `users` collection.
+- 3 failed attempts → account locked for 24 hours (`locked_until` field).
+- Auto-unlocks when `locked_until` is in the past.
+- Checks 6-month inactivity on login: sets `active: FALSE` and blocks login if `last_login` > 183 days ago.
+- Updates `last_login` and resets `failed_attempts` on successful login.
+- Every login event (success/fail/lock) is logged to `user_audit_log` MongoDB collection.
+
+### Inactivity Timeout
+- JavaScript `setInterval` (1-minute ticks) tracks mouse/keyboard/click/scroll activity.
+- 2 minutes idle: fires `idle_warn` Shiny input → shows "Are you still there?" modal.
+- 3 minutes idle: fires `idle_logout` Shiny input → forces logout, shows login screen.
+- Timer does not tick while login screen is visible.
+
+### Post-Login Flow (sequential modals)
+1. `must_change_password == TRUE` → password change modal (requires 8+ chars, matching)
+2. `phone_verified == FALSE` → SMS verification modal (6-digit code via Twilio, 10-min expiry)
+3. `email_verified == FALSE` → email verification modal (6-digit code via SMTP, 10-min expiry)
+4. After email verified → welcome email sent explaining 6-month inactivity policy
+
+### Forgot Password Flow
+- "Forgot username or password?" link on login screen opens a modal.
+- User enters email → system sends username + 6-digit reset code (1-hour expiry).
+- Second modal accepts reset code + new password → updates MongoDB, clears `reset_code`.
+
+### AUP Disclaimer
+The University of Florida Acceptable Use Policy text is displayed verbatim below the login form (hardcoded as `AUP_TEXT` constant).
+
+### New R Libraries Required
+- `shinyjs` — show/hide elements, run JS
+- `digest` — imported but available for future token hashing
+- `emayili` — HTML email sending (was already needed, now primary email method)
+
+### Installation Commands
+```r
+sudo Rscript -e "install.packages(c('shinyjs','digest','emayili'), repos='https://cran.rstudio.com/')"
+```
+
+### MongoDB Collections Used by Auth
+| Collection | Purpose |
+|---|---|
+| `users` | Extended with `email`, `phone`, `email_verified`, `phone_verified`, `must_change_password`, `failed_attempts`, `locked_until`, `last_login`, `created_by`, `invite_token`, `verify_code`, `verify_expires`, `reset_code`, `reset_expires` |
+| `user_audit_log` | Audit trail: `{action, target_user, performed_by, timestamp, details}` |
+| `notification_config` | `{_id:"singleton", notify_emails: "addr1,addr2"}` |
+
+### Enhanced User Management (Admin Only)
+- Admin-only section in Config tab (hidden via `conditionalPanel(condition="output.is_admin")`).
+- Add User form: email + phone required; username auto-derived from email prefix.
+- On add: generates 8-char temp password, bcrypt-hashes it, sets `must_change_password: TRUE`, sends invite email with temp credentials.
+- Delete User: confirm modal, then removes from MongoDB, logs audit event, notifies configured emails.
+- Notification emails: comma-separated list stored in `notification_config` collection; notified on add/delete.
+
+---
+
 ## Tab Order and Descriptions
 
 | # | Label | tabName | Description |

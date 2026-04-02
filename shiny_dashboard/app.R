@@ -1,6 +1,8 @@
 library(shiny)
 library(shinydashboard)
+library(shinyjs)
 library(bcrypt)
+library(digest)
 library(mongolite)
 library(DT)
 library(dplyr)
@@ -13,6 +15,100 @@ library(forcats)
 library(leaflet)
 
 `%||%` <- function(a, b) if (!is.null(a) && nchar(a) > 0) a else b
+
+# ── Auth / Security helper functions ──────────────────────────────────────────
+
+UF_BANNER_HTML <- '<hr><div style="text-align:center;background:#003087;color:white;padding:10px;margin-top:20px;font-family:Arial,sans-serif;"><strong>University of Florida \u2014 FPREN</strong><br>Florida Public Radio Emergency Network<br><small>Information Technology | University of Florida | Gainesville, FL 32611</small></div>'
+
+AUP_TEXT <- "The user understands and acknowledges that the computer and the network are the property of the University of Florida. The user agrees to comply with the University of Florida Acceptable User Policy and Guidelines. Unauthorized use of this system is prohibited and subject to criminal and civil penalties. The university monitors computer and network activities without user authorization, and the university may provide information about computer or network usage to the university officials, including law enforcement when warranted. Therefore, the user should have limited expectations of privacy."
+
+gen_token <- function(n = 32) {
+  paste0(sample(c(letters, LETTERS, 0:9), n, replace = TRUE), collapse = "")
+}
+
+gen_code6 <- function() {
+  sprintf("%06d", sample(0:999999, 1))
+}
+
+send_fpren_email <- function(to, subject, body_html) {
+  sc <- tryCatch(fromJSON("/home/ufuser/Fpren-main/weather_rss/config/smtp_config.json"),
+                 error = function(e) list())
+  smtp_host <- sc$smtp_host %||% "smtp.ufl.edu"
+  smtp_port <- as.integer(if (!is.null(sc$smtp_port) && sc$smtp_port != "") sc$smtp_port else 25)
+  mail_from <- sc$mail_from %||% "lawrence.bornace@ufl.edu"
+  full_html  <- paste0('<html><body style="font-family:Arial,sans-serif;">', body_html, UF_BANNER_HTML, '</body></html>')
+  tryCatch({
+    library(emayili)
+    em <- envelope() %>%
+      from(mail_from) %>% to(to) %>%
+      subject(subject) %>%
+      html(full_html)
+    server(host = smtp_host, port = smtp_port, reuse = FALSE)(em, verbose = FALSE)
+    TRUE
+  }, error = function(e) { message("Email failed: ", e$message); FALSE })
+}
+
+send_twilio_sms <- function(to_phone, body_text) {
+  cfg <- tryCatch(fromJSON("/home/ufuser/Fpren-main/stream_notify_config.json"),
+                  error = function(e) list())
+  sid   <- cfg$twilio_sid   %||% ""
+  token <- cfg$twilio_token %||% ""
+  from  <- cfg$twilio_from  %||% ""
+  if (nchar(sid) == 0 || nchar(token) == 0 || nchar(from) == 0) {
+    message("Twilio not configured"); return(FALSE)
+  }
+  url <- paste0("https://api.twilio.com/2010-04-01/Accounts/", sid, "/Messages.json")
+  tryCatch({
+    r <- httr::POST(url,
+      httr::authenticate(sid, token),
+      body = list(From = from, To = to_phone, Body = body_text),
+      encode = "form")
+    httr::status_code(r) %in% c(200, 201)
+  }, error = function(e) { message("SMS failed: ", e$message); FALSE })
+}
+
+log_audit <- function(action, target_user, performed_by, details = "") {
+  col <- tryCatch(
+    mongo(collection = "user_audit_log", db = "weather_rss",
+          url = Sys.getenv("MONGO_URI", "mongodb://localhost:27017/")),
+    error = function(e) NULL)
+  if (is.null(col)) return(invisible(NULL))
+  tryCatch({
+    col$insert(data.frame(
+      action       = action,
+      target_user  = target_user,
+      performed_by = performed_by,
+      timestamp    = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+      details      = details,
+      stringsAsFactors = FALSE
+    ))
+    col$disconnect()
+  }, error = function(e) {
+    tryCatch(col$disconnect(), error = function(e2) NULL)
+  })
+}
+
+send_notification_emails <- function(subject, body_html) {
+  col <- tryCatch(
+    mongo(collection = "notification_config", db = "weather_rss",
+          url = Sys.getenv("MONGO_URI", "mongodb://localhost:27017/")),
+    error = function(e) NULL)
+  if (is.null(col)) return(invisible(NULL))
+  cfg <- tryCatch({
+    r <- col$find('{"_id":"singleton"}')
+    col$disconnect()
+    r
+  }, error = function(e) {
+    tryCatch(col$disconnect(), error = function(e2) NULL)
+    data.frame()
+  })
+  if (nrow(cfg) == 0 || is.null(cfg$notify_emails)) return(invisible(NULL))
+  emails <- trimws(unlist(strsplit(cfg$notify_emails, ",")))
+  emails <- emails[nchar(emails) > 0]
+  for (em in emails) {
+    tryCatch(send_fpren_email(em, subject, body_html), error = function(e) NULL)
+  }
+}
 
 STREAM_NOTIFY_CONFIG <- "/home/ufuser/Fpren-main/stream_notify_config.json"
 STREAM_STATE_FILE    <- "/home/ufuser/Fpren-main/logs/stream_state.txt"
@@ -337,7 +433,44 @@ get_col <- function(collection) {
 }
 
 # ── UI ────────────────────────────────────────────────────────────────────────
-ui <- dashboardPage(
+
+# Login screen HTML (shown before dashboard)
+login_screen_ui <- div(
+  id = "login_screen",
+  style = "position:fixed;top:0;left:0;width:100%;height:100%;background:#f4f4f4;z-index:9999;display:flex;align-items:center;justify-content:center;overflow-y:auto;",
+  div(style = "background:white;padding:40px;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.15);max-width:520px;width:100%;margin:auto;",
+    div(style = "text-align:center;margin-bottom:20px;",
+      tags$div(style = "background:#003087;color:white;padding:16px;border-radius:6px;margin-bottom:12px;",
+        tags$h2(style = "margin:0;font-size:24px;font-weight:bold;", "FPREN"),
+        tags$p(style = "margin:4px 0 0;font-size:13px;", "Florida Public Radio Emergency Network"),
+        tags$p(style = "margin:2px 0 0;font-size:11px;opacity:0.8;", "University of Florida")
+      )
+    ),
+    tags$div(
+      textInput("login_username", "Username", placeholder = "Enter username"),
+      passwordInput("login_password", "Password", placeholder = "Enter password"),
+      uiOutput("login_attempts_msg"),
+      br(),
+      actionButton("btn_login", "Login", class = "btn-primary btn-block",
+                   width = "100%", style = "font-size:16px;padding:10px;"),
+      br(),
+      actionButton("btn_forgot", "Forgot username or password?",
+                   class = "btn-link", style = "width:100%;text-align:center;"),
+      hr(),
+      tags$div(
+        style = "background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:12px;font-size:12px;color:#333;",
+        tags$strong("NOTICE \u2014 Acceptable Use Policy"),
+        tags$p(style = "margin-top:6px;margin-bottom:0;", AUP_TEXT)
+      )
+    )
+  )
+)
+
+ui <- tagList(
+  useShinyjs(),
+  login_screen_ui,
+  div(id = "main_dashboard", style = "display:none;",
+  dashboardPage(
   skin  = "blue",
   title = "FPREN",
 
@@ -369,7 +502,35 @@ ui <- dashboardPage(
   ),
 
   dashboardBody(
-    tags$head(tags$style(HTML("
+    tags$head(
+      tags$script(HTML("
+        (function() {
+          var idleMinutes = 0;
+          var warnShown = false;
+          function resetIdle() {
+            idleMinutes = 0;
+            warnShown = false;
+            if (window.Shiny) Shiny.setInputValue('user_activity_ping', Math.random());
+          }
+          document.addEventListener('mousemove', resetIdle, true);
+          document.addEventListener('keydown',   resetIdle, true);
+          document.addEventListener('click',     resetIdle, true);
+          document.addEventListener('scroll',    resetIdle, true);
+          setInterval(function() {
+            var ls = document.getElementById('login_screen');
+            if (ls && ls.style.display !== 'none') return;
+            idleMinutes++;
+            if (idleMinutes >= 2 && !warnShown) {
+              warnShown = true;
+              if (window.Shiny) Shiny.setInputValue('idle_warn', Math.random());
+            }
+            if (idleMinutes >= 3) {
+              if (window.Shiny) Shiny.setInputValue('idle_logout', Math.random());
+            }
+          }, 60000);
+        })();
+      ")),
+      tags$style(HTML("
       .content-wrapper { background-color: #f4f6f9; }
       .small-box .icon { font-size: 60px; }
       .alert-extreme { background-color: #f56954 !important; color: white !important; }
@@ -874,24 +1035,41 @@ ui <- dashboardPage(
           )
         ),
         fluidRow(
-          box(title = "User Management", width = 12, status = "warning",
+          box(title = "Notification Email Config", width = 12, status = "info",
               solidHeader = TRUE,
-              p(tags$small("Click a row to select a user, then use Delete to remove them.")),
-              DT::dataTableOutput("users_table"),
-              br(),
-              actionButton("btn_delete_user", "Delete Selected User",
-                           class = "btn-danger", icon = icon("user-minus")),
-              hr(),
-              h5("Add New User"),
-              fluidRow(
-                column(3, textInput("new_user_name", "Username", value = "")),
-                column(3, passwordInput("new_user_pass", "Password", value = "")),
-                column(3, selectInput("new_user_role", "Role",
-                  choices = c("admin","operator","viewer"), selected = "viewer")),
-                column(3, br(), actionButton("btn_add_user", "Add User",
-                  class = "btn-success", icon = icon("user-plus")))
-              ),
-              verbatimTextOutput("user_mgmt_status")
+              p(tags$small("Comma-separated list of email addresses to notify on user add/delete events.")),
+              textInput("cfg_notify_emails", "Notification Email(s)",
+                        placeholder = "admin@ufl.edu, backup@ufl.edu"),
+              actionButton("btn_save_notify_emails", "Save Notification Emails",
+                           class = "btn-primary", icon = icon("save")),
+              verbatimTextOutput("cfg_notify_emails_status")
+          )
+        ),
+        conditionalPanel(
+          condition = "output.is_admin",
+          fluidRow(
+            box(title = "User Management (Admin Only)", width = 12, status = "warning",
+                solidHeader = TRUE,
+                p(tags$small("Click a row to select a user, then use Delete to remove them.")),
+                DT::dataTableOutput("users_table"),
+                br(),
+                actionButton("btn_delete_user", "Delete Selected User",
+                             class = "btn-danger", icon = icon("user-minus")),
+                hr(),
+                h5("Add New User"),
+                p(tags$small("An invite email with a temporary password will be sent to the user's email address.")),
+                fluidRow(
+                  column(4, textInput("new_user_email", "Email (required)", value = "",
+                                      placeholder = "user@ufl.edu")),
+                  column(4, textInput("new_user_phone", "Phone (for SMS verification)", value = "",
+                                      placeholder = "+13525551234")),
+                  column(4, selectInput("new_user_role", "Role",
+                    choices = c("admin","operator","viewer"), selected = "viewer"))
+                ),
+                actionButton("btn_add_user", "Add User & Send Invite",
+                             class = "btn-success", icon = icon("user-plus")),
+                verbatimTextOutput("user_mgmt_status")
+            )
           )
         )
       ),
@@ -1089,10 +1267,528 @@ ui <- dashboardPage(
       )
     )
   )
-)
+  ) # close dashboardPage
+  ) # close div#main_dashboard
+) # close tagList
 
 # ── Server ────────────────────────────────────────────────────────────────────
 server <- function(input, output, session) {
+
+  # ── Auth reactive state ──────────────────────────────────────────────────────
+  auth_rv <- reactiveValues(
+    logged_in   = FALSE,
+    username    = NULL,
+    role        = NULL,
+    email       = NULL,
+    phone       = NULL,
+    user_doc    = NULL
+  )
+
+  login_msg_rv <- reactiveVal("")
+
+  output$is_admin <- reactive({ isTRUE(auth_rv$role == "admin") })
+  outputOptions(output, "is_admin", suspendWhenHidden = FALSE)
+
+  output$login_attempts_msg <- renderUI({
+    msg <- login_msg_rv()
+    if (nchar(msg) == 0) return(NULL)
+    tags$div(class = "alert alert-warning", style = "margin-top:8px;", msg)
+  })
+
+  # ── Login observer ───────────────────────────────────────────────────────────
+  observeEvent(input$btn_login, {
+    uname <- trimws(input$login_username)
+    pword <- input$login_password
+    if (nchar(uname) == 0 || nchar(pword) == 0) {
+      login_msg_rv("Please enter your username and password.")
+      return()
+    }
+    col <- tryCatch(
+      mongo(collection = "users", db = "weather_rss", url = MONGO_URI),
+      error = function(e) NULL)
+    if (is.null(col)) {
+      login_msg_rv("Database unavailable. Try again later.")
+      return()
+    }
+    user <- tryCatch({
+      r <- col$find(sprintf('{"username":"%s"}', uname))
+      col$disconnect()
+      if (nrow(r) == 0) NULL else r[1, ]
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL)
+      NULL
+    })
+
+    if (is.null(user)) {
+      login_msg_rv("Invalid username or password.")
+      log_audit("failed_login", uname, "anonymous", "User not found")
+      return()
+    }
+
+    # Check if account is active
+    if (!isTRUE(user$active)) {
+      login_msg_rv("Account disabled due to inactivity. Contact lawrence.bornace@ufl.edu.")
+      log_audit("failed_login", uname, uname, "Account disabled")
+      return()
+    }
+
+    # Check locked_until
+    now_utc <- Sys.time()
+    if (!is.null(user$locked_until) && !is.na(user$locked_until)) {
+      lu <- tryCatch(as.POSIXct(user$locked_until, tz = "UTC"), error = function(e) NA)
+      if (!is.na(lu) && now_utc < lu) {
+        login_msg_rv("Account locked. Contact lawrence.bornace@ufl.edu to unlock, or wait 24 hours.")
+        log_audit("failed_login", uname, uname, "Account locked")
+        return()
+      } else {
+        # Auto-unlock
+        col2 <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+        if (!is.null(col2)) {
+          tryCatch({
+            col2$update(sprintf('{"username":"%s"}', uname),
+                        '{"$set":{"locked_until":null,"failed_attempts":0}}')
+            col2$disconnect()
+          }, error=function(e) tryCatch(col2$disconnect(), error=function(e2) NULL))
+        }
+      }
+    }
+
+    # Check 6-month inactivity
+    if (!is.null(user$last_login) && !is.na(user$last_login)) {
+      ll <- tryCatch(as.POSIXct(user$last_login, tz = "UTC"), error = function(e) NA)
+      if (!is.na(ll) && difftime(now_utc, ll, units = "days") > 183) {
+        col3 <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+        if (!is.null(col3)) {
+          tryCatch({
+            col3$update(sprintf('{"username":"%s"}', uname), '{"$set":{"active":false}}')
+            col3$disconnect()
+          }, error=function(e) tryCatch(col3$disconnect(), error=function(e2) NULL))
+        }
+        login_msg_rv("Account disabled due to 6 months of inactivity. Contact lawrence.bornace@ufl.edu.")
+        log_audit("account_disabled", uname, uname, "6-month inactivity")
+        return()
+      }
+    }
+
+    # Verify password
+    pw_ok <- tryCatch(bcrypt::checkpw(pword, user$password), error = function(e) FALSE)
+    if (!pw_ok) {
+      fa <- if (!is.null(user$failed_attempts) && !is.na(user$failed_attempts)) as.integer(user$failed_attempts) else 0L
+      fa <- fa + 1L
+      col4 <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+      if (!is.null(col4)) {
+        tryCatch({
+          if (fa >= 3L) {
+            lock_until <- format(now_utc + 86400, "%Y-%m-%dT%H:%M:%SZ", tz="UTC")
+            col4$update(sprintf('{"username":"%s"}', uname),
+                        sprintf('{"$set":{"failed_attempts":%d,"locked_until":"%s"}}', fa, lock_until))
+            col4$disconnect()
+            login_msg_rv("Account locked. Contact lawrence.bornace@ufl.edu to unlock, or wait 24 hours.")
+            log_audit("account_locked", uname, uname, paste("Locked after", fa, "failed attempts"))
+          } else {
+            col4$update(sprintf('{"username":"%s"}', uname),
+                        sprintf('{"$set":{"failed_attempts":%d}}', fa))
+            col4$disconnect()
+            remaining <- 3L - fa
+            login_msg_rv(paste0("Invalid password. ", remaining, " attempt",
+                                if (remaining == 1) "" else "s", " remaining."))
+            log_audit("failed_login", uname, uname, paste("Wrong password, attempt", fa))
+          }
+        }, error=function(e) tryCatch(col4$disconnect(), error=function(e2) NULL))
+      } else {
+        login_msg_rv("Invalid password.")
+      }
+      return()
+    }
+
+    # Successful login — update last_login and reset failed_attempts
+    col5 <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (!is.null(col5)) {
+      tryCatch({
+        col5$update(sprintf('{"username":"%s"}', uname),
+                    sprintf('{"$set":{"failed_attempts":0,"locked_until":null,"last_login":"%s"}}',
+                            format(now_utc, "%Y-%m-%dT%H:%M:%SZ", tz="UTC")))
+        col5$disconnect()
+      }, error=function(e) tryCatch(col5$disconnect(), error=function(e2) NULL))
+    }
+
+    log_audit("login", uname, uname, "Successful login")
+    auth_rv$logged_in <- TRUE
+    auth_rv$username  <- uname
+    auth_rv$role      <- if (!is.null(user$role)) as.character(user$role) else "viewer"
+    auth_rv$email     <- if (!is.null(user$email)) as.character(user$email) else ""
+    auth_rv$phone     <- if (!is.null(user$phone)) as.character(user$phone) else ""
+    auth_rv$user_doc  <- user
+    login_msg_rv("")
+
+    # Show dashboard, hide login
+    shinyjs::hide("login_screen")
+    shinyjs::show("main_dashboard")
+
+    # Post-login flow checks
+    must_change <- isTRUE(user$must_change_password)
+    phone_ver   <- isTRUE(user$phone_verified)
+    email_ver   <- isTRUE(user$email_verified)
+
+    if (must_change) {
+      showModal(modalDialog(
+        title = "Welcome! You must set a new password before continuing.",
+        tags$p("Please choose a new password to continue."),
+        passwordInput("new_pw1", "New Password"),
+        passwordInput("new_pw2", "Confirm New Password"),
+        footer = tagList(
+          actionButton("btn_submit_new_pw", "Set Password", class = "btn-primary")
+        ),
+        easyClose = FALSE
+      ))
+    } else if (!phone_ver && nchar(auth_rv$phone) > 0) {
+      show_phone_verify_modal(auth_rv$phone)
+    } else if (!email_ver && nchar(auth_rv$email) > 0) {
+      show_email_verify_modal(auth_rv$email)
+    }
+  })
+
+  # ── Must-change-password modal ────────────────────────────────────────────────
+  observeEvent(input$btn_submit_new_pw, {
+    p1 <- input$new_pw1
+    p2 <- input$new_pw2
+    if (is.null(p1) || nchar(p1) < 8) {
+      showNotification("Password must be at least 8 characters.", type = "error"); return()
+    }
+    if (p1 != p2) {
+      showNotification("Passwords do not match.", type = "error"); return()
+    }
+    uname <- auth_rv$username
+    new_hash <- bcrypt::hashpw(p1)
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (!is.null(col)) {
+      tryCatch({
+        col$update(sprintf('{"username":"%s"}', uname),
+                   sprintf('{"$set":{"password":"%s","must_change_password":false}}', new_hash))
+        col$disconnect()
+      }, error=function(e) tryCatch(col$disconnect(), error=function(e2) NULL))
+    }
+    log_audit("password_change", uname, uname, "First-login password change")
+    removeModal()
+    showNotification("Password updated successfully.", type = "message")
+
+    # Next: phone verification
+    if (!isTRUE(auth_rv$user_doc$phone_verified) && nchar(auth_rv$phone) > 0) {
+      show_phone_verify_modal(auth_rv$phone)
+    } else if (!isTRUE(auth_rv$user_doc$email_verified) && nchar(auth_rv$email) > 0) {
+      show_email_verify_modal(auth_rv$email)
+    }
+  })
+
+  # ── Phone verification helpers ─────────────────────────────────────────────
+  show_phone_verify_modal <- function(phone) {
+    showModal(modalDialog(
+      title = paste("Verify your phone number:", phone),
+      tags$p("Click 'Send Code' to receive a 6-digit verification code by SMS."),
+      actionButton("btn_send_phone_code", "Send Code", class = "btn-default"),
+      br(), br(),
+      textInput("phone_verify_code", "Enter 6-digit code", placeholder = "000000"),
+      footer = tagList(
+        actionButton("btn_verify_phone", "Verify", class = "btn-primary")
+      ),
+      easyClose = FALSE
+    ))
+  }
+
+  observeEvent(input$btn_send_phone_code, {
+    uname <- auth_rv$username
+    code  <- gen_code6()
+    exp   <- format(Sys.time() + 600, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (!is.null(col)) {
+      tryCatch({
+        col$update(sprintf('{"username":"%s"}', uname),
+                   sprintf('{"$set":{"verify_code":"%s","verify_expires":"%s"}}', code, exp))
+        col$disconnect()
+      }, error=function(e) tryCatch(col$disconnect(), error=function(e2) NULL))
+    }
+    send_twilio_sms(auth_rv$phone,
+                    paste("FPREN verification code:", code, "- expires in 10 minutes."))
+    showNotification("SMS code sent.", type = "message")
+  })
+
+  observeEvent(input$btn_verify_phone, {
+    uname   <- auth_rv$username
+    entered <- trimws(input$phone_verify_code)
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { showNotification("DB error.", type="error"); return() }
+    user <- tryCatch({
+      r <- col$find(sprintf('{"username":"%s"}', uname))
+      col$disconnect()
+      if (nrow(r) == 0) NULL else r[1,]
+    }, error=function(e) { tryCatch(col$disconnect(), error=function(e2) NULL); NULL })
+    if (is.null(user)) { showNotification("User not found.", type="error"); return() }
+    stored_code <- if (!is.null(user$verify_code)) as.character(user$verify_code) else ""
+    stored_exp  <- if (!is.null(user$verify_expires)) as.character(user$verify_expires) else ""
+    exp_time <- tryCatch(as.POSIXct(stored_exp, tz="UTC"), error=function(e) as.POSIXct(0))
+    if (entered != stored_code || Sys.time() > exp_time) {
+      showNotification("Invalid or expired code.", type="error"); return()
+    }
+    col2 <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (!is.null(col2)) {
+      tryCatch({
+        col2$update(sprintf('{"username":"%s"}', uname),
+                    '{"$set":{"phone_verified":true,"verify_code":null,"verify_expires":null}}')
+        col2$disconnect()
+      }, error=function(e) tryCatch(col2$disconnect(), error=function(e2) NULL))
+    }
+    log_audit("phone_verified", uname, uname, "Phone verification successful")
+    removeModal()
+    showNotification("Phone verified!", type="message")
+    if (!isTRUE(auth_rv$user_doc$email_verified) && nchar(auth_rv$email) > 0) {
+      show_email_verify_modal(auth_rv$email)
+    }
+  })
+
+  # ── Email verification helpers ─────────────────────────────────────────────
+  show_email_verify_modal <- function(email) {
+    showModal(modalDialog(
+      title = paste("Verify your email:", email),
+      tags$p("Click 'Send Code' to receive a 6-digit verification code by email."),
+      actionButton("btn_send_email_code", "Send Code", class = "btn-default"),
+      br(), br(),
+      textInput("email_verify_code", "Enter 6-digit code", placeholder = "000000"),
+      footer = tagList(
+        actionButton("btn_verify_email", "Verify", class = "btn-primary")
+      ),
+      easyClose = FALSE
+    ))
+  }
+
+  observeEvent(input$btn_send_email_code, {
+    uname <- auth_rv$username
+    code  <- gen_code6()
+    exp   <- format(Sys.time() + 600, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (!is.null(col)) {
+      tryCatch({
+        col$update(sprintf('{"username":"%s"}', uname),
+                   sprintf('{"$set":{"verify_code":"%s","verify_expires":"%s"}}', code, exp))
+        col$disconnect()
+      }, error=function(e) tryCatch(col$disconnect(), error=function(e2) NULL))
+    }
+    send_fpren_email(auth_rv$email,
+                     "FPREN Email Verification Code",
+                     paste0("<h3>FPREN Email Verification</h3>",
+                            "<p>Your verification code is: <strong style='font-size:24px;'>", code,
+                            "</strong></p><p>This code expires in 10 minutes.</p>"))
+    showNotification("Verification email sent.", type="message")
+  })
+
+  observeEvent(input$btn_verify_email, {
+    uname   <- auth_rv$username
+    entered <- trimws(input$email_verify_code)
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { showNotification("DB error.", type="error"); return() }
+    user <- tryCatch({
+      r <- col$find(sprintf('{"username":"%s"}', uname))
+      col$disconnect()
+      if (nrow(r) == 0) NULL else r[1,]
+    }, error=function(e) { tryCatch(col$disconnect(), error=function(e2) NULL); NULL })
+    if (is.null(user)) { showNotification("User not found.", type="error"); return() }
+    stored_code <- if (!is.null(user$verify_code)) as.character(user$verify_code) else ""
+    stored_exp  <- if (!is.null(user$verify_expires)) as.character(user$verify_expires) else ""
+    exp_time <- tryCatch(as.POSIXct(stored_exp, tz="UTC"), error=function(e) as.POSIXct(0))
+    if (entered != stored_code || Sys.time() > exp_time) {
+      showNotification("Invalid or expired code.", type="error"); return()
+    }
+    col2 <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (!is.null(col2)) {
+      tryCatch({
+        col2$update(sprintf('{"username":"%s"}', uname),
+                    '{"$set":{"email_verified":true,"verify_code":null,"verify_expires":null}}')
+        col2$disconnect()
+      }, error=function(e) tryCatch(col2$disconnect(), error=function(e2) NULL))
+    }
+    log_audit("email_verified", uname, uname, "Email verification successful")
+    removeModal()
+    showNotification("Email verified!", type="message")
+    # Send welcome email
+    send_fpren_email(auth_rv$email, "Welcome to FPREN Dashboard",
+      paste0(
+        "<h2>Welcome to the FPREN Dashboard!</h2>",
+        "<p>Hello ", uname, ",</p>",
+        "<p>Your account has been fully verified. You now have access to the ",
+        "Florida Public Radio Emergency Network monitoring dashboard.</p>",
+        "<h3>Important: Account Inactivity Policy</h3>",
+        "<p>Your account will be <strong>automatically disabled after 6 months of inactivity</strong>. ",
+        "To keep your account active, please log in at least once every 6 months.</p>",
+        "<p>If your account is disabled, contact ",
+        "<a href='mailto:lawrence.bornace@ufl.edu'>lawrence.bornace@ufl.edu</a> to restore access.</p>",
+        "<p>For questions or support, please contact lawrence.bornace@ufl.edu.</p>"
+      ))
+  })
+
+  # ── Forgot username/password ──────────────────────────────────────────────
+  observeEvent(input$btn_forgot, {
+    showModal(modalDialog(
+      title = "Forgot Username or Password",
+      tags$p("Enter your email address. If found, we'll send your username and a password reset code."),
+      textInput("forgot_email", "Email Address", placeholder = "you@ufl.edu"),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("btn_send_reset", "Send Reset Email", class = "btn-primary")
+      )
+    ))
+  })
+
+  observeEvent(input$btn_send_reset, {
+    em <- trimws(input$forgot_email)
+    if (nchar(em) == 0) { showNotification("Enter an email address.", type="error"); return() }
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { showNotification("DB unavailable.", type="error"); return() }
+    user <- tryCatch({
+      r <- col$find(sprintf('{"email":"%s"}', em))
+      col$disconnect()
+      if (nrow(r) == 0) NULL else r[1,]
+    }, error=function(e) { tryCatch(col$disconnect(), error=function(e2) NULL); NULL })
+    if (!is.null(user)) {
+      code <- gen_code6()
+      exp  <- format(Sys.time() + 3600, "%Y-%m-%dT%H:%M:%SZ", tz="UTC")
+      col2 <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+      if (!is.null(col2)) {
+        tryCatch({
+          col2$update(sprintf('{"email":"%s"}', em),
+                      sprintf('{"$set":{"reset_code":"%s","reset_expires":"%s"}}', code, exp))
+          col2$disconnect()
+        }, error=function(e) tryCatch(col2$disconnect(), error=function(e2) NULL))
+      }
+      uname <- as.character(user$username)
+      send_fpren_email(em, "FPREN Account: Username & Password Reset",
+        paste0(
+          "<h3>FPREN Account Information</h3>",
+          "<p>Your username is: <strong>", uname, "</strong></p>",
+          "<p>Your password reset code is: <strong style='font-size:24px;'>", code, "</strong></p>",
+          "<p>This code expires in 1 hour. Enter it on the login screen to reset your password.</p>",
+          "<p>If you did not request this, please contact lawrence.bornace@ufl.edu immediately.</p>"
+        ))
+      log_audit("password_reset_request", uname, uname, paste("Reset code sent to", em))
+    }
+    removeModal()
+    showNotification("If that email is registered, a reset code was sent.", type="message")
+    # Show reset code entry modal
+    showModal(modalDialog(
+      title = "Enter Password Reset Code",
+      tags$p("Enter the 6-digit code sent to your email, then choose a new password."),
+      textInput("reset_code_input", "Reset Code", placeholder = "000000"),
+      passwordInput("reset_new_pw1", "New Password"),
+      passwordInput("reset_new_pw2", "Confirm New Password"),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("btn_submit_reset", "Reset Password", class = "btn-primary")
+      )
+    ))
+  })
+
+  observeEvent(input$btn_submit_reset, {
+    em   <- trimws(input$forgot_email)
+    code <- trimws(input$reset_code_input)
+    p1   <- input$reset_new_pw1
+    p2   <- input$reset_new_pw2
+    if (p1 != p2) { showNotification("Passwords do not match.", type="error"); return() }
+    if (nchar(p1) < 8) { showNotification("Password must be at least 8 characters.", type="error"); return() }
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { showNotification("DB unavailable.", type="error"); return() }
+    user <- tryCatch({
+      r <- col$find(sprintf('{"email":"%s"}', em))
+      col$disconnect()
+      if (nrow(r) == 0) NULL else r[1,]
+    }, error=function(e) { tryCatch(col$disconnect(), error=function(e2) NULL); NULL })
+    if (is.null(user)) { showNotification("Email not found.", type="error"); return() }
+    stored_code <- if (!is.null(user$reset_code)) as.character(user$reset_code) else ""
+    stored_exp  <- if (!is.null(user$reset_expires)) as.character(user$reset_expires) else ""
+    exp_time <- tryCatch(as.POSIXct(stored_exp, tz="UTC"), error=function(e) as.POSIXct(0))
+    if (code != stored_code || Sys.time() > exp_time) {
+      showNotification("Invalid or expired reset code.", type="error"); return()
+    }
+    new_hash <- bcrypt::hashpw(p1)
+    col2 <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (!is.null(col2)) {
+      uname <- as.character(user$username)
+      tryCatch({
+        col2$update(sprintf('{"email":"%s"}', em),
+                    sprintf('{"$set":{"password":"%s","must_change_password":false,"reset_code":null,"reset_expires":null}}',
+                            new_hash))
+        col2$disconnect()
+      }, error=function(e) tryCatch(col2$disconnect(), error=function(e2) NULL))
+      log_audit("password_reset", uname, uname, "Password reset via email code")
+    }
+    removeModal()
+    showNotification("Password reset successful. Please log in.", type="message")
+  })
+
+  # ── Inactivity timeout ─────────────────────────────────────────────────────
+  observeEvent(input$idle_warn, {
+    if (!auth_rv$logged_in) return()
+    showModal(modalDialog(
+      title = "Are you still there?",
+      tags$p("You will be logged out in 1 minute due to inactivity."),
+      footer = tagList(
+        actionButton("btn_stay_active", "Yes, I'm here", class = "btn-primary")
+      ),
+      easyClose = FALSE
+    ))
+  })
+
+  observeEvent(input$btn_stay_active, {
+    removeModal()
+  })
+
+  observeEvent(input$idle_logout, {
+    if (!auth_rv$logged_in) return()
+    log_audit("logout", auth_rv$username %||% "unknown", auth_rv$username %||% "unknown", "Inactivity timeout")
+    auth_rv$logged_in <- FALSE
+    auth_rv$username  <- NULL
+    auth_rv$role      <- NULL
+    removeModal()
+    shinyjs::hide("main_dashboard")
+    shinyjs::show("login_screen")
+    updateTextInput(session, "login_username", value = "")
+    updateTextInput(session, "login_password", value = "")
+    login_msg_rv("You were logged out due to inactivity.")
+  })
+
+  # ── Notification email config ─────────────────────────────────────────────
+  notify_email_status <- reactiveVal("")
+  output$cfg_notify_emails_status <- renderText({ notify_email_status() })
+
+  # Load saved notification emails on startup
+  observe({
+    col <- tryCatch(mongo(collection="notification_config", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) return()
+    tryCatch({
+      r <- col$find('{"_id":"singleton"}')
+      col$disconnect()
+      if (nrow(r) > 0 && !is.null(r$notify_emails)) {
+        updateTextInput(session, "cfg_notify_emails", value = as.character(r$notify_emails))
+      }
+    }, error=function(e) tryCatch(col$disconnect(), error=function(e2) NULL))
+  })
+
+  observeEvent(input$btn_save_notify_emails, {
+    emails <- trimws(input$cfg_notify_emails)
+    col <- tryCatch(mongo(collection="notification_config", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { notify_email_status("DB unavailable."); return() }
+    tryCatch({
+      existing <- col$find('{"_id":"singleton"}')
+      if (nrow(existing) == 0) {
+        col$insert(list(`_id` = "singleton", notify_emails = emails))
+      } else {
+        col$update('{"_id":"singleton"}',
+                   sprintf('{"$set":{"notify_emails":"%s"}}', emails))
+      }
+      col$disconnect()
+      notify_email_status(paste("Saved at", format(Sys.time(), "%H:%M:%S")))
+    }, error=function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL)
+      notify_email_status(paste("Error:", conditionMessage(e)))
+    })
+  })
 
   # Auto-refresh timer
   timer <- reactiveTimer(60000)
@@ -2862,70 +3558,179 @@ server <- function(input, output, session) {
     )
   })
 
-  # User Management
+  # ── Enhanced User Management (Admin Only) ────────────────────────────────────
   user_mgmt_msg  <- reactiveVal("")
-  user_mgmt_rv   <- reactiveVal(0)   # increment to force table refresh
-  users_col      <- get_col("users")
+  user_mgmt_rv   <- reactiveVal(0)
 
   output$users_table <- DT::renderDataTable({
     user_mgmt_rv()
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) return(data.frame(Message="DB unavailable"))
     tryCatch({
-      u <- users_col$find("{}", fields = '{"password":0,"_id":0}')
+      u <- col$find("{}", fields = '{"password":0,"verify_code":0,"reset_code":0,"invite_token":0,"_id":0}')
+      col$disconnect()
       if (nrow(u) == 0) return(data.frame(Message="No users found"))
-      u
-    }, error = function(e) data.frame(Error=conditionMessage(e)))
+      # Select display columns
+      keep <- intersect(c("username","email","phone","role","active",
+                          "email_verified","phone_verified","last_login",
+                          "created_at","created_by"), names(u))
+      u[, keep, drop=FALSE]
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL)
+      data.frame(Error=conditionMessage(e))
+    })
   }, selection = "single", options = list(pageLength=10), rownames = FALSE)
 
   observeEvent(input$btn_add_user, {
-    req(input$new_user_name, input$new_user_pass)
+    if (!isTRUE(auth_rv$role == "admin")) {
+      user_mgmt_msg("Admin role required."); return()
+    }
+    email <- trimws(input$new_user_email)
+    phone <- trimws(input$new_user_phone)
+    role  <- input$new_user_role
+    if (nchar(email) == 0) { user_mgmt_msg("Email is required."); return() }
+
+    # Derive username from email prefix
+    uname <- tolower(gsub("[^a-z0-9._]", "", strsplit(email, "@")[[1]][1]))
+    if (nchar(uname) == 0) uname <- paste0("user", format(Sys.time(), "%Y%m%d%H%M%S"))
+
+    temp_pw    <- paste0(sample(c(letters, LETTERS, 0:9), 8, replace=TRUE), collapse="")
+    pw_hash    <- bcrypt::hashpw(temp_pw)
+    invite_tok <- gen_token()
+    now_str    <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz="UTC")
+
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { user_mgmt_msg("DB unavailable."); return() }
     tryCatch({
-      users_col$insert(data.frame(
-        username = trimws(input$new_user_name),
-        password = bcrypt::hashpw(input$new_user_pass),
-        role     = input$new_user_role,
-        active   = TRUE,
-        stringsAsFactors = FALSE
+      col$insert(list(
+        username             = uname,
+        email                = email,
+        phone                = phone,
+        password             = pw_hash,
+        role                 = role,
+        active               = TRUE,
+        email_verified       = FALSE,
+        phone_verified       = FALSE,
+        must_change_password = TRUE,
+        failed_attempts      = 0L,
+        locked_until         = NULL,
+        last_login           = NULL,
+        created_at           = now_str,
+        created_by           = auth_rv$username %||% "admin",
+        invite_token         = invite_tok,
+        verify_code          = NULL,
+        verify_expires       = NULL,
+        reset_code           = NULL,
+        reset_expires        = NULL
       ))
-      user_mgmt_msg(paste("User", input$new_user_name, "created."))
-      updateTextInput(session, "new_user_name", value="")
-      updateTextInput(session, "new_user_pass", value="")
-      user_mgmt_rv(user_mgmt_rv() + 1)
-    }, error = function(e) user_mgmt_msg(paste("Error:", conditionMessage(e))))
+      col$disconnect()
+    }, error=function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL)
+      user_mgmt_msg(paste("Error creating user:", conditionMessage(e)))
+      return()
+    })
+
+    # Send invite email
+    send_fpren_email(email,
+      "You have been invited to the FPREN Dashboard",
+      paste0(
+        "<h2>Welcome to FPREN Dashboard</h2>",
+        "<p>An account has been created for you on the Florida Public Radio Emergency Network dashboard.</p>",
+        "<table style='border-collapse:collapse;margin:16px 0;'>",
+        "<tr><td style='padding:4px 12px 4px 0;font-weight:bold;'>Username:</td><td>", uname, "</td></tr>",
+        "<tr><td style='padding:4px 12px 4px 0;font-weight:bold;'>Temporary Password:</td><td>", temp_pw, "</td></tr>",
+        "<tr><td style='padding:4px 12px 4px 0;font-weight:bold;'>Role:</td><td>", role, "</td></tr>",
+        "</table>",
+        "<p><strong>You will be required to change your password on first login.</strong></p>",
+        "<p>Dashboard URL: <a href='https://128.227.67.234'>https://128.227.67.234</a></p>",
+        "<p>For help, contact <a href='mailto:lawrence.bornace@ufl.edu'>lawrence.bornace@ufl.edu</a></p>"
+      ))
+
+    # Log and notify
+    log_audit("user_add", uname, auth_rv$username %||% "admin",
+              paste("Added user", uname, "(", email, ") with role", role))
+
+    send_notification_emails(
+      paste("FPREN: New user added:", uname),
+      paste0("<h3>FPREN User Management Notification</h3>",
+             "<p><strong>Action:</strong> New user added</p>",
+             "<p><strong>Username:</strong> ", uname, "</p>",
+             "<p><strong>Email:</strong> ", email, "</p>",
+             "<p><strong>Role:</strong> ", role, "</p>",
+             "<p><strong>Performed by:</strong> ", auth_rv$username %||% "admin", "</p>",
+             "<p><strong>Date/Time:</strong> ", now_str, "</p>")
+    )
+
+    user_mgmt_msg(paste("User", uname, "created and invite sent to", email))
+    updateTextInput(session, "new_user_email", value="")
+    updateTextInput(session, "new_user_phone", value="")
+    user_mgmt_rv(user_mgmt_rv() + 1)
   })
 
   observeEvent(input$btn_delete_user, {
+    if (!isTRUE(auth_rv$role == "admin")) {
+      user_mgmt_msg("Admin role required."); return()
+    }
     sel <- input$users_table_rows_selected
     if (is.null(sel) || length(sel) == 0) {
       user_mgmt_msg("Select a user row first, then click Delete.")
       return()
     }
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { user_mgmt_msg("DB unavailable."); return() }
     tryCatch({
-      u <- users_col$find("{}", fields = '{"username":1,"role":1,"_id":0}')
-      target_user <- u$username[sel]
+      u <- col$find("{}", fields = '{"username":1,"email":1,"_id":0}')
+      col$disconnect()
+      target_user  <- u$username[sel]
+      target_email <- if (!is.null(u$email)) u$email[sel] else ""
       showModal(modalDialog(
         title = "Confirm Delete",
         tags$p("Are you sure you want to delete user ",
                tags$strong(target_user), "?"),
         tags$p(tags$small("This cannot be undone.")),
+        tags$input(type="hidden", id="delete_target_user", value=target_user),
         footer = tagList(
           modalButton("Cancel"),
           actionButton("btn_confirm_delete", "Delete",
                        class = "btn-danger", icon = icon("trash"))
         )
       ))
-    }, error = function(e) user_mgmt_msg(paste("Error:", conditionMessage(e))))
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL)
+      user_mgmt_msg(paste("Error:", conditionMessage(e)))
+    })
   })
 
   observeEvent(input$btn_confirm_delete, {
     removeModal()
+    if (!isTRUE(auth_rv$role == "admin")) return()
     sel <- input$users_table_rows_selected
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { user_mgmt_msg("DB unavailable."); return() }
     tryCatch({
-      u <- users_col$find("{}", fields = '{"username":1,"_id":0}')
-      target_user <- u$username[sel]
-      users_col$remove(sprintf('{"username":"%s"}', target_user))
+      u <- col$find("{}", fields = '{"username":1,"email":1,"_id":0}')
+      target_user  <- u$username[sel]
+      target_email <- if (!is.null(u$email)) as.character(u$email[sel]) else ""
+      col$remove(sprintf('{"username":"%s"}', target_user))
+      col$disconnect()
+      now_str <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz="UTC")
+      log_audit("user_delete", target_user, auth_rv$username %||% "admin",
+                paste("Deleted user", target_user))
+      send_notification_emails(
+        paste("FPREN: User deleted:", target_user),
+        paste0("<h3>FPREN User Management Notification</h3>",
+               "<p><strong>Action:</strong> User deleted</p>",
+               "<p><strong>Username:</strong> ", target_user, "</p>",
+               "<p><strong>Email:</strong> ", target_email, "</p>",
+               "<p><strong>Performed by:</strong> ", auth_rv$username %||% "admin", "</p>",
+               "<p><strong>Date/Time:</strong> ", now_str, "</p>")
+      )
       user_mgmt_msg(paste("User", target_user, "deleted."))
       user_mgmt_rv(user_mgmt_rv() + 1)
-    }, error = function(e) user_mgmt_msg(paste("Error:", conditionMessage(e))))
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL)
+      user_mgmt_msg(paste("Error:", conditionMessage(e)))
+    })
   })
 
   output$user_mgmt_status <- renderText({ user_mgmt_msg() })

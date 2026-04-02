@@ -1539,7 +1539,7 @@ server <- function(input, output, session) {
     if (is.null(user)) { showNotification("User not found.", type="error"); return() }
     stored_code <- if (!is.null(user$verify_code)) as.character(user$verify_code) else ""
     stored_exp  <- if (!is.null(user$verify_expires)) as.character(user$verify_expires) else ""
-    exp_time <- tryCatch(as.POSIXct(stored_exp, tz="UTC"), error=function(e) as.POSIXct(0))
+    exp_time <- tryCatch(lubridate::ymd_hms(stored_exp), error=function(e) as.POSIXct(0))
     if (entered != stored_code || Sys.time() > exp_time) {
       showNotification("Invalid or expired code.", type="error"); return()
     }
@@ -1607,7 +1607,7 @@ server <- function(input, output, session) {
     if (is.null(user)) { showNotification("User not found.", type="error"); return() }
     stored_code <- if (!is.null(user$verify_code)) as.character(user$verify_code) else ""
     stored_exp  <- if (!is.null(user$verify_expires)) as.character(user$verify_expires) else ""
-    exp_time <- tryCatch(as.POSIXct(stored_exp, tz="UTC"), error=function(e) as.POSIXct(0))
+    exp_time <- tryCatch(lubridate::ymd_hms(stored_exp), error=function(e) as.POSIXct(0))
     if (entered != stored_code || Sys.time() > exp_time) {
       showNotification("Invalid or expired code.", type="error"); return()
     }
@@ -1716,7 +1716,7 @@ server <- function(input, output, session) {
     if (is.null(user)) { showNotification("Email not found.", type="error"); return() }
     stored_code <- if (!is.null(user$reset_code)) as.character(user$reset_code) else ""
     stored_exp  <- if (!is.null(user$reset_expires)) as.character(user$reset_expires) else ""
-    exp_time <- tryCatch(as.POSIXct(stored_exp, tz="UTC"), error=function(e) as.POSIXct(0))
+    exp_time <- tryCatch(lubridate::ymd_hms(stored_exp), error=function(e) as.POSIXct(0))
     if (code != stored_code || Sys.time() > exp_time) {
       showNotification("Invalid or expired reset code.", type="error"); return()
     }

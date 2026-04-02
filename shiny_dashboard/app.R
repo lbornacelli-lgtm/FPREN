@@ -462,6 +462,16 @@ login_screen_ui <- div(
     tags$div(
       textInput("login_username", "Username", placeholder = "Enter username"),
       passwordInput("login_password", "Password", placeholder = "Enter password"),
+      tags$script(HTML("
+        document.addEventListener('DOMContentLoaded', function() {
+          document.getElementById('login_password').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') { document.getElementById('btn_login').click(); }
+          });
+          document.getElementById('login_username').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') { document.getElementById('btn_login').click(); }
+          });
+        });
+      ")),
       uiOutput("login_attempts_msg"),
       br(),
       actionButton("btn_login", "Login", class = "btn-primary btn-block",

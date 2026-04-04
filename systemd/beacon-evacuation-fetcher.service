@@ -1,0 +1,16 @@
+[Unit]
+Description=FPREN FL Evacuation Data Fetcher — zones and routes for all 67 FL counties
+After=network.target mongod.service
+Wants=mongod.service
+
+[Service]
+Type=oneshot
+User=ufuser
+WorkingDirectory=/home/ufuser/Fpren-main
+ExecStart=/home/ufuser/Fpren-main/venv/bin/python3 weather_rss/fl_evacuation_fetcher.py
+StandardOutput=journal
+StandardError=journal
+Environment=MONGO_URI=mongodb://localhost:27017
+
+[Install]
+WantedBy=multi-user.target

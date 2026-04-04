@@ -30,35 +30,56 @@ gen_code6 <- function() {
   sprintf("%06d", sample(0:999999, 1))
 }
 
-send_fpren_email <- function(to, subject, body_html) {
+send_fpren_email <- function(to, subject, body_html, attachment_path = NULL) {
+  # Validate recipient
+  if (is.null(to) || nchar(trimws(to)) == 0) {
+    message("Email skipped: no recipient specified"); return(FALSE)
+  }
   sc <- tryCatch(fromJSON("/home/ufuser/Fpren-main/weather_rss/config/smtp_config.json"),
                  error = function(e) list())
   smtp_host <- sc$smtp_host %||% "smtp.ufl.edu"
-  smtp_port <- as.integer(if (!is.null(sc$smtp_port) && sc$smtp_port != "") sc$smtp_port else 25)
+  smtp_port <- as.integer(if (!is.null(sc$smtp_port) && nchar(as.character(sc$smtp_port)) > 0) sc$smtp_port else 25)
   mail_from <- sc$mail_from %||% "lawrence.bornace@ufl.edu"
-  full_html  <- paste0('<html><body style="font-family:Arial,sans-serif;">', body_html, UF_BANNER_HTML, '</body></html>')
-  # Delegate to Python helper script — avoids emayili/shinyjs namespace conflicts
+  full_html <- paste0(
+    '<!DOCTYPE html><html><head><meta charset="UTF-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0"></head>',
+    '<body style="font-family:Arial,sans-serif;max-width:680px;margin:0 auto;padding:16px;color:#333;">',
+    body_html, UF_BANNER_HTML, '</body></html>'
+  )
+  # Delegate to Python helper — avoids emayili/Shiny namespace conflicts
   tryCatch({
     tmp_html <- tempfile(fileext = ".html")
     tmp_cfg  <- tempfile(fileext = ".json")
     writeLines(full_html, tmp_html)
-    write_json(
-      list(to = to, subject = subject, mail_from = mail_from,
-           smtp_host = smtp_host, smtp_port = smtp_port,
-           use_tls  = isTRUE(sc$use_tls),
-           use_auth = isTRUE(sc$use_auth),
-           smtp_user = sc$smtp_user %||% "",
-           smtp_pass = sc$smtp_pass %||% ""),
-      tmp_cfg, auto_unbox = TRUE)
+    cfg_list <- list(
+      to         = to,
+      subject    = subject,
+      mail_from  = mail_from,
+      smtp_host  = smtp_host,
+      smtp_port  = smtp_port,
+      use_tls    = isTRUE(sc$use_tls),
+      use_auth   = isTRUE(sc$use_auth),
+      smtp_user  = sc$smtp_user %||% "",
+      smtp_pass  = sc$smtp_pass %||% "",
+      attachment = if (!is.null(attachment_path) && file.exists(attachment_path)) attachment_path else ""
+    )
+    write_json(cfg_list, tmp_cfg, auto_unbox = TRUE)
     py_helper <- "/home/ufuser/Fpren-main/shiny_dashboard/send_email.py"
     result <- system2("python3", args = c(py_helper, tmp_cfg, tmp_html),
-                      stdout = TRUE, stderr = TRUE)
+                      stdout = TRUE, stderr = TRUE, timeout = 30)
     try(file.remove(tmp_html), silent = TRUE)
     try(file.remove(tmp_cfg),  silent = TRUE)
-    if (any(grepl("^OK", result))) { TRUE } else {
-      message("Email failed: ", paste(result, collapse = " ")); FALSE
+    if (any(grepl("^OK", result))) {
+      TRUE
+    } else {
+      err_msg <- paste(result, collapse = " ")
+      message("[FPREN Email] Failed to ", to, ": ", substr(err_msg, 1, 200))
+      FALSE
     }
-  }, error = function(e) { message("Email error: ", e$message); FALSE })
+  }, error = function(e) {
+    message("[FPREN Email] Error sending to ", to, ": ", e$message)
+    FALSE
+  })
 }
 
 send_twilio_sms <- function(to_phone, body_text) {
@@ -499,8 +520,10 @@ ui <- tagList(
 
   dashboardHeader(
     title = tags$span(
-      style = "font-size: 13px; font-weight: bold; line-height: 1.35; white-space: normal;",
-      "Florida Public Radio Emergency Network"
+      style = "line-height: 1.2; white-space: normal;",
+      tags$div(style = "font-size: 15px; font-weight: bold;", "FPREN"),
+      tags$div(style = "font-size: 11px; font-weight: normal; opacity: 0.9;",
+               "Florida Public Radio Emergency Network")
     ),
     titleWidth = 280
   ),
@@ -528,11 +551,11 @@ ui <- tagList(
             var ls = document.getElementById('login_screen');
             if (ls && ls.style.display !== 'none') return;
             idleMinutes++;
-            if (idleMinutes >= 2 && !warnShown) {
+            if (idleMinutes >= 4 && !warnShown) {
               warnShown = true;
               if (window.Shiny) Shiny.setInputValue('idle_warn', Math.random());
             }
-            if (idleMinutes >= 3) {
+            if (idleMinutes >= 5) {
               if (window.Shiny) Shiny.setInputValue('idle_logout', Math.random());
             }
           }, 60000);
@@ -659,7 +682,7 @@ ui <- tagList(
                   actionButton("btn_wx_forecast", "Get Forecast",
                                class = "btn-info btn-lg", icon = icon("search"))
                 ),
-                column(2, br(),
+                column(2, style = "padding-left:24px;", br(),
                   actionButton("btn_wx_clear", "Clear",
                                class = "btn-default", icon = icon("times"))
                 ),
@@ -731,8 +754,10 @@ ui <- tagList(
         ),
         fluidRow(
           box(title = "Interactive Map", width = 12, status = "info", solidHeader = TRUE,
-              p(icon("map"), " Interactive map coming soon — will show incident pins
-                colour-coded by severity across Florida highway network."))
+              p(tags$small(style="color:#666;",
+                  icon("info-circle"),
+                  " Circle size = incident count per county. Color = worst severity. Click a county to filter the table above.")),
+              leafletOutput("traffic_map", height = "480px"))
         )
       ),
 
@@ -832,7 +857,7 @@ ui <- tagList(
                   actionButton("btn_ca_search", "Search Alerts",
                                class = "btn-primary btn-lg", icon = icon("search"))
                 ),
-                column(4,
+                column(4, style = "padding-left: 28px;",
                   br(),
                   uiOutput("ca_zip_hint")
                 )
@@ -862,15 +887,32 @@ ui <- tagList(
           box(title = "Export Report", width = 12, status = "success",
               solidHeader = TRUE,
               fluidRow(
-                column(3,
+                column(4,
+                  selectInput("ca_pdf_county", "County for Report",
+                    choices = c("All Florida",
+                                sort(c("Alachua","Baker","Bay","Bradford","Brevard","Broward",
+                                  "Calhoun","Charlotte","Citrus","Clay","Collier","Columbia",
+                                  "DeSoto","Dixie","Duval","Escambia","Flagler","Franklin",
+                                  "Gadsden","Gilchrist","Glades","Gulf","Hamilton","Hardee",
+                                  "Hendry","Hernando","Highlands","Hillsborough","Holmes",
+                                  "Indian River","Jackson","Jefferson","Lafayette","Lake",
+                                  "Lee","Leon","Levy","Liberty","Madison","Manatee","Marion",
+                                  "Martin","Miami-Dade","Monroe","Nassau","Okaloosa","Okeechobee",
+                                  "Orange","Osceola","Palm Beach","Pasco","Pinellas","Polk",
+                                  "Putnam","St. Johns","St. Lucie","Santa Rosa","Sarasota",
+                                  "Seminole","Sumter","Suwannee","Taylor","Union","Volusia",
+                                  "Wakulla","Walton","Washington"))),
+                    selected = "All Florida")
+                ),
+                column(3, br(),
                   actionButton("btn_ca_pdf", "Generate PDF Report",
                                class = "btn-primary", icon = icon("file-pdf"))
                 ),
-                column(3,
+                column(3, br(),
                   actionButton("btn_ca_email", "Email Report",
                                class = "btn-default", icon = icon("envelope"))
                 ),
-                column(6,
+                column(2,
                   verbatimTextOutput("ca_report_status")
                 )
               )
@@ -1041,6 +1083,90 @@ ui <- tagList(
         )
       ),
 
+      # ── Census & Demographics ────────────────────────────────────────────────
+      tabItem(tabName = "census",
+        fluidRow(
+          valueBoxOutput("census_vbox_pop",        width = 3),
+          valueBoxOutput("census_vbox_elderly",     width = 3),
+          valueBoxOutput("census_vbox_poverty",     width = 3),
+          valueBoxOutput("census_vbox_vulnerable",  width = 3)
+        ),
+        fluidRow(
+          box(title = "County Selector", width = 4, status = "primary", solidHeader = TRUE,
+              selectInput("census_county_sel", "Florida County",
+                choices = c("Loading..." = ""), selected = ""),
+              br(),
+              actionButton("btn_census_analyze", "AI Vulnerability Analysis",
+                           class = "btn-primary", icon = icon("brain")),
+              br(), br(),
+              verbatimTextOutput("census_ai_output"),
+              hr(),
+              p(tags$small(icon("info-circle"),
+                " Data: US Census ACS 5-Year Estimates. ",
+                tags$a("Census API", href="https://api.census.gov", target="_blank"),
+                " | AI: UF LiteLLM (llama-3.3-70b)"))
+          ),
+          box(title = "County Demographics", width = 8, status = "info", solidHeader = TRUE,
+              uiOutput("census_county_detail"),
+              hr(),
+              plotOutput("census_vulnerability_chart", height = "220px")
+          )
+        ),
+        fluidRow(
+          box(title = "Active Alert — Population Impact", width = 12,
+              status = "warning", solidHeader = TRUE,
+              p(tags$small("Select an active NWS alert to see AI-generated population impact assessment using Census data.")),
+              selectInput("census_alert_sel", "Active Alert",
+                choices = c("Loading..." = ""), selected = ""),
+              fluidRow(
+                column(2,
+                  actionButton("btn_census_impact", "Analyze Impact",
+                               class = "btn-warning", icon = icon("exclamation-triangle"))
+                ),
+                column(2,
+                  actionButton("btn_census_impact_pdf", "Export PDF",
+                               class = "btn-primary", icon = icon("file-pdf"))
+                ),
+                column(2,
+                  actionButton("btn_census_impact_email", "Email Report",
+                               class = "btn-default", icon = icon("envelope"))
+                ),
+                column(6,
+                  verbatimTextOutput("census_impact_status")
+                )
+              ),
+              br(),
+              uiOutput("census_impact_output")
+          )
+        ),
+        fluidRow(
+          box(title = "All 67 FL Counties — Vulnerability Rankings", width = 12,
+              status = "primary", solidHeader = TRUE,
+              p(tags$small("Sorted by vulnerability score (elderly %, poverty %, limited English %, disability %). ",
+                strong("Admin only:"), " use Refresh button to pull fresh data from the Census API.")),
+              fluidRow(
+                column(8, DT::dataTableOutput("census_all_table")),
+                column(4,
+                  conditionalPanel(
+                    condition = "output.is_admin",
+                    br(),
+                    actionButton("btn_census_refresh", "Refresh from Census API",
+                                 class = "btn-danger btn-sm", icon = icon("cloud-download-alt")),
+                    br(), br(),
+                    verbatimTextOutput("census_refresh_status"),
+                    hr(),
+                    p(tags$small("Census API key is stored in:"),
+                      br(),
+                      code("weather_rss/config/census_config.json"),
+                      br(),
+                      tags$small("or env var CENSUS_API_KEY"))
+                  )
+                )
+              )
+          )
+        )
+      ),
+
       # ── Config ──────────────────────────────────────────────────────────────
       tabItem(tabName = "config",
         fluidRow(
@@ -1102,11 +1228,10 @@ ui <- tagList(
           fluidRow(
             box(title = "User Management (Admin Only)", width = 12, status = "warning",
                 solidHeader = TRUE,
-                p(tags$small("Click a row to select a user, then use Delete to remove them.")),
+                p(tags$small("Click a user row to select them. A profile card will appear below with options to edit or delete.")),
                 DT::dataTableOutput("users_table"),
                 br(),
-                actionButton("btn_delete_user", "Delete Selected User",
-                             class = "btn-danger", icon = icon("user-minus")),
+                uiOutput("user_profile_card"),
                 hr(),
                 h5("Add New User"),
                 p(tags$small("An invite email with a temporary password will be sent to the user's email address.")),
@@ -1118,9 +1243,108 @@ ui <- tagList(
                   column(4, selectInput("new_user_role", "Role",
                     choices = c("admin","operator","viewer"), selected = "viewer"))
                 ),
+                fluidRow(
+                  column(6,
+                    selectInput("new_user_profession", "Profession",
+                      choices = c(
+                        list("-- Select a profession --" = ""),
+                        list(
+                          "Broadcast" = c(
+                            "Broadcast Engineer"      = "Broadcast Engineer",
+                            "Broadcast Administrator" = "Broadcast Administrator",
+                            "Broadcast Operator"      = "Broadcast Operator",
+                            "Program Director"        = "Program Director",
+                            "Chief Engineer"          = "Chief Engineer",
+                            "News Director"           = "News Director",
+                            "Production Manager"      = "Production Manager"
+                          ),
+                          "Law Enforcement" = c(
+                            "Police Chief"                   = "Police Chief",
+                            "Police Lieutenant"              = "Police Lieutenant",
+                            "Police Officer"                 = "Police Officer",
+                            "Campus Security Officer"        = "Campus Security Officer",
+                            "Dispatch Coordinator"           = "Dispatch Coordinator",
+                            "Emergency Services Coordinator" = "Emergency Services Coordinator"
+                          ),
+                          "Emergency Management" = c(
+                            "County Emergency Manager" = "County Emergency Manager",
+                            "City Administrator"       = "City Administrator",
+                            "Public Safety Director"   = "Public Safety Director",
+                            "EOC Coordinator"          = "EOC Coordinator",
+                            "FEMA Liaison"             = "FEMA Liaison",
+                            "Hazmat Coordinator"       = "Hazmat Coordinator"
+                          ),
+                          "General" = c(
+                            "Facility Manager"         = "Facility Manager",
+                            "IT/Systems Administrator" = "IT/Systems Administrator",
+                            "Station Manager"          = "Station Manager",
+                            "Other"                    = "Other"
+                          )
+                        )
+                      ),
+                      selected = "")
+                  ),
+                  column(6, br(),
+                    uiOutput("profession_bcp_hint")
+                  )
+                ),
                 actionButton("btn_add_user", "Add User & Send Invite",
                              class = "btn-success", icon = icon("user-plus")),
                 verbatimTextOutput("user_mgmt_status")
+            )
+          )
+        ),
+        conditionalPanel(
+          condition = "output.is_admin",
+          fluidRow(
+            box(title = "User Assets / Properties (Admin Only)", width = 12, status = "primary",
+                solidHeader = TRUE,
+                p(tags$small(icon("info-circle"),
+                  " Select a user above to view and manage their assets.",
+                  " Assets store the physical location of each property with LAT/LON for BCP generation.")),
+                fluidRow(
+                  column(4, selectInput("asset_mgmt_user", "Selected User",
+                    choices = c("-- select a user --" = ""), selected = "")),
+                  column(4, br(),
+                    actionButton("btn_load_user_assets", "Load Assets",
+                                 class = "btn-primary btn-sm", icon = icon("sync")))
+                ),
+                DT::dataTableOutput("user_assets_table"),
+                br(),
+                fluidRow(
+                  column(6,
+                    actionButton("btn_delete_asset", "Remove Selected Asset",
+                                 class = "btn-warning btn-sm", icon = icon("trash"))
+                  )
+                ),
+                uiOutput("asset_nearby_panel"),
+                hr(),
+                h5(icon("plus"), " Add New Asset"),
+                fluidRow(
+                  column(4, textInput("new_asset_name",    "Asset Name",    placeholder = "WUFT Studio B")),
+                  column(4, textInput("new_asset_address", "Full Address",   placeholder = "1600 SW 23rd Dr, Gainesville, FL 32608")),
+                  column(4, selectInput("new_asset_type", "Asset Type",
+                    choices = c("Radio Station","Transmitter Site","Office","Tower","Data Center",
+                                "Remote Studio","Repeater Site","Facility","Other")))
+                ),
+                fluidRow(
+                  column(3, textInput("new_asset_zip",   "ZIP Code",  placeholder = "32608")),
+                  column(3, uiOutput("new_asset_city_ui")),
+                  column(3, numericInput("new_asset_lat", "Latitude",  value = NULL, step = 0.0001)),
+                  column(3, numericInput("new_asset_lon", "Longitude", value = NULL, step = -0.0001))
+                ),
+                fluidRow(
+                  column(6, uiOutput("new_asset_airport_ui")),
+                  column(6, textInput("new_asset_notes", "Notes (optional)", placeholder = ""))
+                ),
+                br(),
+                actionButton("btn_lookup_zip",  "Lookup City & Airport from ZIP",
+                             class = "btn-info btn-sm", icon = icon("search")),
+                tags$span(style = "margin-left: 16px;"),
+                actionButton("btn_add_asset", "Add Asset",
+                             class = "btn-success", icon = icon("plus")),
+                br(), br(),
+                verbatimTextOutput("asset_mgmt_status")
             )
           )
         )
@@ -1166,30 +1390,93 @@ ui <- tagList(
           box(title = "Normal Mode Playlist", width = 5, status = "success",
               solidHeader = TRUE,
               p(tags$small(icon("info-circle"),
-                " These content types rotate in the regular hourly broadcast when no P1 interrupt is active.")),
-              checkboxGroupInput("normal_playlist_types", NULL,
-                choiceNames = list(
-                  "Fire / Red Flag Warnings",
-                  "Flood Alerts",
-                  "Freeze / Winter Alerts",
-                  "Fog Advisories",
-                  "Other Alerts",
-                  "Weather Reports",
-                  "Traffic Alerts",
-                  "Airport Weather",
-                  "Educational Content",
-                  "Imaging / Sweepers",
-                  "Top of Hour IDs"
-                ),
-                choiceValues = list(
-                  "fire", "flooding", "freeze", "fog", "other_alerts",
-                  "weather_report", "traffic", "airport_weather",
-                  "educational", "imaging", "top_of_hour"
-                ),
-                selected = c("fire","flooding","freeze","fog","other_alerts",
-                             "weather_report","traffic","airport_weather",
-                             "educational","imaging","top_of_hour")
+                " Check to include. Drag to reorder priority (top = highest). Unchecked types are silenced.")),
+              # Sortable + checkable playlist editor
+              tags$div(id = "playlist_sortable",
+                style = "border:1px solid #ddd; border-radius:4px; padding:4px; background:#fff;",
+                # Each row: drag handle + checkbox + label
+                lapply(list(
+                  list(val="fire",          label="Fire / Red Flag Warnings",  checked=TRUE),
+                  list(val="flooding",      label="Flood Alerts",              checked=TRUE),
+                  list(val="freeze",        label="Freeze / Winter Alerts",    checked=TRUE),
+                  list(val="fog",           label="Fog Advisories",            checked=TRUE),
+                  list(val="other_alerts",  label="Other Alerts",              checked=TRUE),
+                  list(val="weather_report",label="Weather Reports",           checked=TRUE),
+                  list(val="traffic",       label="Traffic Alerts",            checked=TRUE),
+                  list(val="airport_weather",label="Airport Weather",          checked=TRUE),
+                  list(val="educational",   label="Educational Content",       checked=TRUE),
+                  list(val="imaging",       label="Imaging / Sweepers",        checked=TRUE),
+                  list(val="top_of_hour",   label="Top of Hour IDs",           checked=TRUE)
+                ), function(item) {
+                  tags$div(
+                    class = "playlist-row",
+                    `data-val` = item$val,
+                    style = "display:flex;align-items:center;padding:5px 8px;cursor:grab;border-bottom:1px solid #eee;",
+                    tags$span(icon("grip-vertical"),
+                              style = "color:#aaa;margin-right:8px;font-size:14px;flex-shrink:0;"),
+                    tags$input(type="checkbox", id=paste0("pl_chk_",item$val),
+                               value=item$val,
+                               checked=if(item$checked) "checked" else NULL,
+                               style="margin-right:8px;width:16px;height:16px;flex-shrink:0;"),
+                    tags$label(`for`=paste0("pl_chk_",item$val),
+                               style="margin:0;cursor:pointer;font-weight:normal;",
+                               item$label)
+                  )
+                })
               ),
+              tags$script(HTML("
+                // SortableJS-based drag reorder for playlist rows
+                (function() {
+                  function initPlaylistSort() {
+                    var el = document.getElementById('playlist_sortable');
+                    if (!el || typeof Sortable === 'undefined') {
+                      setTimeout(initPlaylistSort, 400);
+                      return;
+                    }
+                    Sortable.create(el, {
+                      animation: 150,
+                      handle: '.fa-grip-vertical',
+                      onEnd: function() {
+                        // Collect ordered checked values and push to Shiny
+                        var rows = el.querySelectorAll('.playlist-row');
+                        var checked = [], all = [];
+                        rows.forEach(function(r) {
+                          var v = r.getAttribute('data-val');
+                          all.push(v);
+                          var cb = r.querySelector('input[type=checkbox]');
+                          if (cb && cb.checked) checked.push(v);
+                        });
+                        Shiny.setInputValue('playlist_order', all.join(','));
+                        Shiny.setInputValue('normal_playlist_types', checked);
+                      }
+                    });
+                    // Also fire on checkbox change
+                    el.addEventListener('change', function(e) {
+                      if (e.target && e.target.type === 'checkbox') {
+                        var rows = el.querySelectorAll('.playlist-row');
+                        var checked = [], all = [];
+                        rows.forEach(function(r) {
+                          var v = r.getAttribute('data-val');
+                          all.push(v);
+                          var cb = r.querySelector('input[type=checkbox]');
+                          if (cb && cb.checked) checked.push(v);
+                        });
+                        Shiny.setInputValue('playlist_order', all.join(','));
+                        Shiny.setInputValue('normal_playlist_types', checked);
+                      }
+                    });
+                  }
+                  // Load SortableJS if not present
+                  if (typeof Sortable === 'undefined') {
+                    var s = document.createElement('script');
+                    s.src = 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js';
+                    s.onload = initPlaylistSort;
+                    document.head.appendChild(s);
+                  } else {
+                    initPlaylistSort();
+                  }
+                })();
+              ")),
               br(),
               actionButton("btn_save_playlist_config", "Save Config",
                            class = "btn-success", icon = icon("save")),
@@ -1229,36 +1516,73 @@ ui <- tagList(
       # ── Reports ─────────────────────────────────────────────────────────────
       tabItem(tabName = "reports",
         fluidRow(
-          box(title = "Generate PDF Report", width = 6, status = "primary",
-              solidHeader = TRUE,
-              selectInput("rpt_days", "Report Period",
-                choices = c("1 day" = 1, "7 days" = 7, "14 days" = 14, "30 days" = 30),
-                selected = 7),
-              selectInput("rpt_zone", "Zone",
-                choices = c("All Florida", "North Florida", "Alachua County"),
-                selected = "All Florida"),
-              checkboxInput("rpt_email", "Email report after generating", value = TRUE),
-              br(),
-              actionButton("btn_gen_report", "Generate PDF Report",
-                           class = "btn-primary btn-lg", icon = icon("file-pdf")),
-              br(), br(),
-              verbatimTextOutput("rpt_status")
-          ),
-          box(title = "Recent Reports", width = 6, status = "info",
-              solidHeader = TRUE,
-              DTOutput("tbl_reports"),
-              br(),
-              uiOutput("rpt_download_links")
+          box(title = tagList(icon("file-pdf"), " Report Generator"), width = 12,
+              status = "primary", solidHeader = TRUE,
+              p(tags$small("Select a report template, configure its options, then generate a PDF.",
+                           " All reports are saved to the output folder and can optionally be emailed.")),
+              fluidRow(
+                column(4,
+                  selectInput("unified_rpt_template", "Report Template",
+                    choices = list(
+                      "NWS Alerts" = c(
+                        "NWS Alert Summary (by zone & period)"  = "alert_summary",
+                        "County Alert Report"                   = "county_alerts"
+                      ),
+                      "Weather" = c(
+                        "Weather Trends (airport station)"      = "weather_trends"
+                      ),
+                      "Traffic" = c(
+                        "Traffic Analysis Report"               = "traffic_analysis"
+                      ),
+                      "Census & Demographics" = c(
+                        "Census Alert Population Impact"        = "census_impact"
+                      ),
+                      "Business Continuity" = c(
+                        "BCP — General Facility"                = "bcp_general",
+                        "BCP — Broadcast Facility & Staff"      = "bcp_broadcast",
+                        "BCP — County Emergency Management"     = "bcp_county_em",
+                        "BCP — Campus Police Force"             = "bcp_campus_police"
+                      ),
+                      "System" = c(
+                        "Comprehensive FPREN System Report"     = "comprehensive"
+                      )
+                    ),
+                    selected = "alert_summary")
+                ),
+                column(8,
+                  uiOutput("unified_rpt_desc")
+                )
+              ),
+              hr(),
+              uiOutput("unified_rpt_params"),
+              hr(),
+              fluidRow(
+                column(3,
+                  checkboxInput("unified_rpt_email", "Email after generating", value = FALSE)
+                ),
+                column(3,
+                  actionButton("btn_unified_gen", "Generate PDF",
+                               class = "btn-primary btn-lg", icon = icon("file-pdf"))
+                ),
+                column(6,
+                  verbatimTextOutput("unified_rpt_status")
+                )
+              )
           )
         ),
         fluidRow(
-          box(title = "Scheduled Reports", width = 12, status = "success",
-              solidHeader = TRUE,
+          box(title = "Recent Reports", width = 8, status = "info", solidHeader = TRUE,
+              DTOutput("tbl_reports"),
+              br(),
+              uiOutput("rpt_download_links")
+          ),
+          box(title = "Scheduled Reports", width = 4, status = "success", solidHeader = TRUE,
               p(icon("clock"), strong(" Daily report runs automatically at 6:00 AM ET")),
-              p("Reports are saved to: ",
-                code("/home/ufuser/Fpren-main/reports/output/")),
-              p("To run manually from the server:"),
-              code("Rscript /home/ufuser/Fpren-main/reports/generate_and_email.R 7")
+              p("Reports are saved to:"),
+              code("/home/ufuser/Fpren-main/reports/output/"),
+              hr(),
+              p("To run manually:"),
+              code("Rscript reports/generate_and_email.R 7")
           )
         ),
         hr(),
@@ -1292,8 +1616,17 @@ ui <- tagList(
                 format = "yyyy-mm-dd"),
               checkboxInput("wt_email", "Email report after generating", value = FALSE),
               br(),
-              actionButton("btn_gen_wx_trend", "Generate Weather Trends PDF",
-                           class = "btn-warning btn-lg", icon = icon("chart-line")),
+              tags$span(
+                title = paste0(
+                  "Generates a PDF weather trends report for the selected airport station ",
+                  "and date range. Includes temperature trend line chart, wind speed and ",
+                  "direction rose, humidity trend, flight category distribution ",
+                  "(VFR/MVFR/IFR/LIFR), summary statistics, and notable IFR/LIFR events. ",
+                  "Uses hourly METAR snapshots stored in MongoDB (up to 90 days)."
+                ),
+                actionButton("btn_gen_wx_trend", "Generate Weather Trends PDF",
+                             class = "btn-warning btn-lg", icon = icon("chart-line"))
+              ),
               br(), br(),
               verbatimTextOutput("wt_status")
           ),
@@ -1315,6 +1648,44 @@ ui <- tagList(
                 " via the ", code("fpren-weather-history.timer"), " systemd unit."),
               p(icon("database"), " Up to 90 days of data retained per station.")
           )
+        ),
+        hr(),
+        h3(icon("shield-alt"), " Business Continuity Plans"),
+        fluidRow(
+          box(title = "Generate Business Continuity Plan PDF", width = 6, status = "danger",
+              solidHeader = TRUE,
+              p(tags$small("Select a user and asset to generate a BCP. Choose",
+                           strong("All Facilities"), "to generate individual BCPs for",
+                           "every registered asset using each user's profession-matched template.")),
+              selectInput("bcp_username", "User",
+                choices = c("-- select a user --" = ""), selected = ""),
+              selectInput("bcp_asset_id", "Asset / Property",
+                choices = c("Select a user first" = ""), selected = ""),
+              uiOutput("bcp_template_selector"),
+              uiOutput("bcp_template_desc"),
+              checkboxInput("bcp_email", "Email BCP after generating", value = FALSE),
+              br(),
+              tags$span(
+                title = paste0(
+                  "Generates a Business Continuity Plan PDF for the selected user asset. ",
+                  "Includes live weather risk at the nearest airport, active NWS alerts ",
+                  "for the asset's county, traffic and evacuation route data, census ",
+                  "vulnerability analysis, emergency contacts, and a recovery timeline. ",
+                  "Select 'All Facilities' to batch-generate BCPs for every asset."
+                ),
+                actionButton("btn_gen_bcp", "Generate BCP PDF",
+                             class = "btn-danger btn-lg", icon = icon("shield-alt"))
+              ),
+              br(), br(),
+              verbatimTextOutput("bcp_status")
+          ),
+          box(title = "Recent BCP Reports", width = 6, status = "info",
+              solidHeader = TRUE,
+              p(tags$small("Click a filename to download.")),
+              DTOutput("tbl_bcp_reports"),
+              br(),
+              uiOutput("bcp_download_links")
+          )
         )
       )
     )
@@ -1325,6 +1696,36 @@ ui <- tagList(
 
 # ── Server ────────────────────────────────────────────────────────────────────
 server <- function(input, output, session) {
+
+  # Ensure TinyTeX binaries (xelatex, etc.) are on PATH for PDF rendering
+  Sys.setenv(PATH = paste0("/home/ufuser/.local/bin:", Sys.getenv("PATH")))
+
+  # Profession → BCP template auto-mapping
+  PROFESSION_TEMPLATE_MAP <- c(
+    "Broadcast Engineer"             = "broadcast",
+    "Broadcast Administrator"        = "broadcast",
+    "Broadcast Operator"             = "broadcast",
+    "Program Director"               = "broadcast",
+    "Chief Engineer"                 = "broadcast",
+    "News Director"                  = "broadcast",
+    "Production Manager"             = "broadcast",
+    "Police Chief"                   = "campus_police",
+    "Police Lieutenant"              = "campus_police",
+    "Police Officer"                 = "campus_police",
+    "Campus Security Officer"        = "campus_police",
+    "Dispatch Coordinator"           = "campus_police",
+    "Emergency Services Coordinator" = "campus_police",
+    "County Emergency Manager"       = "county_em",
+    "City Administrator"             = "county_em",
+    "Public Safety Director"         = "county_em",
+    "EOC Coordinator"                = "county_em",
+    "FEMA Liaison"                   = "county_em",
+    "Hazmat Coordinator"             = "county_em",
+    "Facility Manager"               = "general",
+    "IT/Systems Administrator"       = "general",
+    "Station Manager"                = "general",
+    "Other"                          = "general"
+  )
 
   # ── Auth reactive state ──────────────────────────────────────────────────────
   auth_rv <- reactiveValues(
@@ -1356,7 +1757,8 @@ server <- function(input, output, session) {
       menuItem("County Alerts",            tabName = "county_alerts",   icon = icon("map-marker-alt")),
       menuItem("Airport Delays & Weather", tabName = "airports",        icon = icon("plane")),
       menuItem("Icecast Streams",          tabName = "icecast",         icon = icon("broadcast-tower")),
-      menuItem("Feed Status",              tabName = "feeds",           icon = icon("rss"))
+      menuItem("Feed Status",              tabName = "feeds",           icon = icon("rss")),
+      menuItem("Census & Demographics",    tabName = "census",          icon = icon("users"))
     )
     operator_items <- list(
       menuItem("Upload Content",  tabName = "upload",   icon = icon("upload")),
@@ -2285,7 +2687,7 @@ server <- function(input, output, session) {
       df <- col$find('{}', fields = '{"incident_id":1,"county":1,"road":1,
         "direction":1,"type":1,"event_subtype":1,"description":1,
         "severity":1,"is_full_closure":1,"major_event":1,
-        "last_updated":1,"_id":0}')
+        "dot_district":1,"last_updated":1,"_id":0}')
       col$disconnect()
       df
     }, error = function(e) data.frame())
@@ -2487,7 +2889,13 @@ server <- function(input, output, session) {
 
       column(3,
         div(class = paste("wx-card", css_class),
-          div(class = "wx-city", row$display_name),
+          `data-icao` = row$icao,
+          `data-lat`  = as.character(row$lat),
+          `data-lon`  = as.character(row$lon),
+          style = "position:relative; cursor:pointer;",
+          div(class = "wx-city", row$display_name,
+              tags$span(style = "font-size:10px; color:#aaa; margin-left:4px;",
+                        title = "Hover for 7-day forecast", icon("calendar-alt"))),
           div(class = "wx-cat",  cat),
           div(class = "wx-temp", temp_f),
           div(class = "wx-feels", feels_str),
@@ -2496,7 +2904,21 @@ server <- function(input, output, session) {
             icon("wind"), wind_str, tags$br(),
             icon("tint"), hum_str, tags$br(),
             icon("eye"),  vis_str),
-          div(class = "wx-time", icon("clock"), " Obs: ", obs_str)
+          div(class = "wx-time", icon("clock"), " Obs: ", obs_str),
+          # 7-day forecast popup (hidden by default, shown on hover)
+          div(class = "wx-forecast-popup",
+              style = paste0(
+                "display:none; position:absolute; z-index:9999;",
+                " top:0; left:100%; min-width:320px; max-width:400px;",
+                " background:#fff; border:2px solid #0077aa;",
+                " border-radius:6px; padding:10px; box-shadow:2px 4px 12px rgba(0,0,0,0.25);",
+                " font-size:12px; line-height:1.4;"
+              ),
+              div(style = "font-weight:bold; color:#003087; margin-bottom:6px;",
+                  paste0(row$display_name, " — 7-Day Forecast")),
+              div(class = "wx-forecast-content",
+                  style = "color:#666;", "Loading forecast...")
+          )
         )
       )
     })
@@ -2509,7 +2931,98 @@ server <- function(input, output, session) {
         do.call(fluidRow, chunk)
       }
     )
-    do.call(tagList, rows)
+    # Append 7-day hover JS after the grid renders
+    tagList(
+      do.call(tagList, rows),
+      tags$script(HTML("
+        (function() {
+          // NWS 7-day forecast hover for city weather cards
+          var _fcCache = {};
+
+          function fetchForecast(lat, lon, popup, contentEl) {
+            var key = lat + ',' + lon;
+            if (_fcCache[key]) { renderForecast(contentEl, _fcCache[key]); return; }
+            contentEl.innerHTML = 'Loading forecast...';
+            fetch('https://api.weather.gov/points/' + lat + ',' + lon)
+              .then(function(r){ return r.json(); })
+              .then(function(d){
+                var furl = d && d.properties && d.properties.forecast;
+                if (!furl) throw new Error('No forecast URL');
+                return fetch(furl);
+              })
+              .then(function(r){ return r.json(); })
+              .then(function(d){
+                var periods = d && d.properties && d.properties.periods;
+                if (!periods) throw new Error('No periods');
+                _fcCache[key] = periods.slice(0, 14);
+                renderForecast(contentEl, _fcCache[key]);
+              })
+              .catch(function(e){
+                contentEl.innerHTML = '<span style=\"color:#c00;\">Forecast unavailable</span>';
+              });
+          }
+
+          function renderForecast(el, periods) {
+            var html = '<div style=\"display:flex; flex-wrap:wrap; gap:4px;\">';
+            // Show day-time periods only (max 7)
+            var days = periods.filter(function(p){ return p.isDaytime; }).slice(0, 7);
+            days.forEach(function(p) {
+              var tempClr = p.temperature > 90 ? '#c00' : p.temperature < 45 ? '#00c' : '#333';
+              html += '<div style=\"flex:0 0 calc(14% - 4px); min-width:38px; text-align:center;' +
+                      'border:1px solid #ddd; border-radius:4px; padding:3px 2px; background:#f9f9f9;\">' +
+                '<div style=\"font-weight:bold; font-size:10px; color:#003087;\">' +
+                  p.name.replace('This ', '').substring(0,3) + '</div>' +
+                '<div style=\"font-size:11px; color:' + tempClr + '; font-weight:bold;\">' +
+                  p.temperature + '&deg;' + p.temperatureUnit + '</div>' +
+                '<div style=\"font-size:9px; color:#555; line-height:1.2;\">' +
+                  p.shortForecast.substring(0, 22) + '</div>' +
+                '</div>';
+            });
+            html += '</div>';
+            el.innerHTML = html;
+          }
+
+          function attachHovers() {
+            var cards = document.querySelectorAll('.wx-card[data-lat]');
+            cards.forEach(function(card) {
+              if (card._hoverAttached) return;
+              card._hoverAttached = true;
+              var lat = card.getAttribute('data-lat');
+              var lon = card.getAttribute('data-lon');
+              var popup = card.querySelector('.wx-forecast-popup');
+              var content = popup && popup.querySelector('.wx-forecast-content');
+              if (!popup || !content) return;
+
+              var timer = null;
+              card.addEventListener('mouseenter', function() {
+                timer = setTimeout(function() {
+                  // Flip popup to left side if near right edge
+                  var rect = card.getBoundingClientRect();
+                  if (rect.right + 320 > window.innerWidth) {
+                    popup.style.left = 'auto';
+                    popup.style.right = '100%';
+                  } else {
+                    popup.style.left = '100%';
+                    popup.style.right = 'auto';
+                  }
+                  popup.style.display = 'block';
+                  fetchForecast(lat, lon, popup, content);
+                }, 300);
+              });
+              card.addEventListener('mouseleave', function() {
+                clearTimeout(timer);
+                popup.style.display = 'none';
+              });
+            });
+          }
+
+          // Re-attach after Shiny re-renders the grid
+          var observer = new MutationObserver(function() { attachHovers(); });
+          observer.observe(document.body, { childList: true, subtree: true });
+          attachHovers();
+        })();
+      "))
+    )
   })
 
   # ── Traffic Alerts tab ──────────────────────────────────────────────────────
@@ -2588,6 +3101,79 @@ server <- function(input, output, session) {
         backgroundColor = styleEqual(c("Major","Minor"),
                                      c("#c0392b","#e67e22")),
         color = styleEqual(c("Major","Minor"), c("white","white")))
+  })
+
+  # ── Traffic Alerts map ───────────────────────────────────────────────────────
+
+  output$traffic_map <- leaflet::renderLeaflet({
+    df <- traffic_filtered()
+
+    base_map <- leaflet::leaflet() %>%
+      leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron) %>%
+      leaflet::setView(lng = -83.5, lat = 27.8, zoom = 7)
+
+    if (nrow(df) == 0 || !"county" %in% names(df)) return(base_map)
+
+    # Aggregate by county
+    county_df <- df %>%
+      filter(!is.na(county), county != "") %>%
+      group_by(county) %>%
+      summarise(
+        incidents  = n(),
+        major      = sum(tolower(severity) == "major",        na.rm = TRUE),
+        closures   = sum(is_full_closure == TRUE,             na.rm = TRUE),
+        top_type   = names(sort(table(type), decreasing = TRUE))[1],
+        .groups    = "drop"
+      ) %>%
+      mutate(
+        worst = case_when(major > 0 ~ "Major", closures > 0 ~ "Closure", TRUE ~ "Minor"),
+        fill  = case_when(worst == "Major" ~ "#bd0026", worst == "Closure" ~ "#fd8d3c", TRUE ~ "#feb24c")
+      )
+
+    map_df <- FL_COUNTY_LATLON %>%
+      inner_join(county_df, by = "county")
+
+    if (nrow(map_df) == 0) return(base_map)
+
+    radius_fn <- function(n) scales::rescale(sqrt(n), to = c(10, 50),
+                                              from = c(1, sqrt(max(n, 1))))
+
+    base_map %>%
+      leaflet::addCircleMarkers(
+        data        = map_df,
+        lat         = ~lat,
+        lng         = ~lon,
+        layerId     = ~county,
+        radius      = ~radius_fn(incidents),
+        color       = "white",
+        weight      = 1.5,
+        fillColor   = ~fill,
+        fillOpacity = 0.85,
+        popup = ~paste0(
+          "<b>", county, " County</b><br>",
+          "<b>", incidents, " incident", ifelse(incidents == 1, "", "s"), "</b>",
+          ifelse(major > 0,   paste0("<br><span style='color:#bd0026;'>&#9679; ", major, " Major</span>"), ""),
+          ifelse(closures > 0, paste0("<br><span style='color:#fd8d3c;'>&#9679; ", closures, " Full Closure(s)</span>"), ""),
+          ifelse(!is.na(top_type), paste0("<br>Top type: ", top_type), ""),
+          "<br><small><i>Click to filter table</i></small>"
+        ),
+        label = ~paste0(county, ": ", incidents, " incident", ifelse(incidents == 1, "", "s"))
+      ) %>%
+      leaflet::addLegend(
+        position = "bottomright",
+        colors   = c("#bd0026","#fd8d3c","#feb24c"),
+        labels   = c("Major incident","Full closure","Minor/Other"),
+        title    = "Severity",
+        opacity  = 0.85
+      )
+  })
+
+  # Click on county circle → update the County filter dropdown
+  observeEvent(input$traffic_map_marker_click, {
+    clicked <- input$traffic_map_marker_click$id
+    if (!is.null(clicked) && nchar(clicked) > 0) {
+      updateSelectInput(session, "traffic_county", selected = clicked)
+    }
   })
 
   # ── Traffic Analysis tab ─────────────────────────────────────────────────────
@@ -3074,9 +3660,9 @@ server <- function(input, output, session) {
 
   # PDF generation
   observeEvent(input$btn_ca_pdf, {
-    county <- ca_selected_county()
-    if (is.null(county)) {
-      showNotification("Search for a county first.", type = "warning")
+    county <- input$ca_pdf_county
+    if (is.null(county) || county == "") {
+      showNotification("Select a county for the report.", type = "warning")
       return()
     }
     ca_report_status_rv("Generating PDF report\u2026 (this may take 30\u201360 s)")
@@ -3109,9 +3695,9 @@ server <- function(input, output, session) {
 
   # Email report
   observeEvent(input$btn_ca_email, {
-    county <- ca_selected_county()
-    if (is.null(county)) {
-      showNotification("Search for a county first.", type = "warning")
+    county <- input$ca_pdf_county
+    if (is.null(county) || county == "") {
+      showNotification("Select a county for the report.", type = "warning")
       return()
     }
     output_dir  <- "/home/ufuser/Fpren-main/reports/output"
@@ -3731,10 +4317,308 @@ server <- function(input, output, session) {
   })
 
   # ── Reports tab ─────────────────────────────────────────────────────────────
-  rpt_status_msg <- reactiveVal("")
-  rpt_output_dir <- "/home/ufuser/Fpren-main/reports/output"
+  rpt_status_msg     <- reactiveVal("")
+  unified_rpt_status <- reactiveVal("")
+  rpt_output_dir     <- "/home/ufuser/Fpren-main/reports/output"
 
-  output$rpt_status <- renderText({ rpt_status_msg() })
+  output$rpt_status        <- renderText({ rpt_status_msg() })
+  output$unified_rpt_status <- renderText({ unified_rpt_status() })
+
+  # Template descriptions
+  .RPT_DESCS <- list(
+    alert_summary   = list(icon="bell",         color="#2471a3",
+      text="Summarizes all NWS alerts for a zone over a selected time period. Includes severity breakdown, event type distribution, and per-alert detail with issued/expires times."),
+    county_alerts   = list(icon="map-marker-alt",color="#1a6b3a",
+      text="All active NWS alerts for a specific Florida county or all of Florida. Includes severity table, per-alert descriptions, and county-level summary statistics."),
+    weather_trends  = list(icon="chart-line",    color="#d68910",
+      text="Historical weather trends for any FL airport station over a date range. Shows temperature trend, wind rose, humidity, and flight category distribution (VFR/MVFR/IFR/LIFR)."),
+    traffic_analysis= list(icon="car",           color="#884ea0",
+      text="FL511 traffic incident analysis for a selected county and date. Includes incident type breakdown, map-ready location data, and DOT district summary."),
+    census_impact   = list(icon="users",         color="#e74c3c",
+      text="Census-based population impact assessment for a selected NWS alert. Shows total population at risk, county demographics (elderly %, poverty %, disability %), and AI-generated impact narrative."),
+    bcp_general     = list(icon="building",      color="#566573",
+      text="General facility Business Continuity Plan. Covers weather risk at nearest airport, active alerts for the county, traffic/evacuation routes, census vulnerability data, and recovery timeline."),
+    bcp_broadcast   = list(icon="broadcast-tower",color="#e07020",
+      text="Broadcast Facility & Staff BCP. Adds equipment checklist (transmitter, generator, Icecast, UPS), FCC emergency obligations, on-air continuity options, and staff accountability roles."),
+    bcp_county_em   = list(icon="map",           color="#1a6b3a",
+      text="County Emergency Management BCP. Covers evacuation zone thresholds by hurricane category, EOC activation levels, mass notification coordination (FPREN/IPAWS/CodeRED/EAS), and FEMA recovery timeline."),
+    bcp_campus_police=list(icon="shield-alt",    color="#1c2b6e",
+      text="Campus Police Force BCP. Includes sector assignments, staffing levels by alert phase, vulnerable population protocols (ADA/LEP), inter-agency MOU checklist, and vehicle pre-positioning."),
+    comprehensive   = list(icon="th-list",       color="#212f3d",
+      text="Full FPREN system report. Covers all active alerts statewide, weather obs for 16 FL cities, stream health, traffic incidents, and BCP for all registered user assets.")
+  )
+
+  output$unified_rpt_desc <- renderUI({
+    tmpl <- input$unified_rpt_template %||% "alert_summary"
+    d    <- .RPT_DESCS[[tmpl]]
+    if (is.null(d)) return(NULL)
+    div(style=paste0("border-left:4px solid ", d$color, ";padding:8px 12px;background:#fafafa;border-radius:0 4px 4px 0;"),
+      tags$small(icon(d$icon), " ", d$text)
+    )
+  })
+
+  # FL counties list (shared)
+  .FL_COUNTIES_LIST <- c("All Florida",
+    sort(c("Alachua","Baker","Bay","Bradford","Brevard","Broward",
+      "Calhoun","Charlotte","Citrus","Clay","Collier","Columbia",
+      "DeSoto","Dixie","Duval","Escambia","Flagler","Franklin",
+      "Gadsden","Gilchrist","Glades","Gulf","Hamilton","Hardee",
+      "Hendry","Hernando","Highlands","Hillsborough","Holmes",
+      "Indian River","Jackson","Jefferson","Lafayette","Lake",
+      "Lee","Leon","Levy","Liberty","Madison","Manatee","Marion",
+      "Martin","Miami-Dade","Monroe","Nassau","Okaloosa","Okeechobee",
+      "Orange","Osceola","Palm Beach","Pasco","Pinellas","Polk",
+      "Putnam","St. Johns","St. Lucie","Santa Rosa","Sarasota",
+      "Seminole","Sumter","Suwannee","Taylor","Union","Volusia",
+      "Wakulla","Walton","Washington")))
+
+  .WX_CITIES_LIST <- c(
+    "Jacksonville (KJAX)"    = "KJAX", "Tallahassee (KTLH)"     = "KTLH",
+    "Gainesville (KGNV)"     = "KGNV", "Ocala (KOCF)"           = "KOCF",
+    "Orlando (KMCO)"         = "KMCO", "Daytona Beach (KDAB)"   = "KDAB",
+    "Tampa (KTPA)"           = "KTPA", "St. Petersburg (KSPG)"  = "KSPG",
+    "Sarasota (KSRQ)"        = "KSRQ", "Fort Myers (KRSW)"      = "KRSW",
+    "Miami (KMIA)"           = "KMIA", "Fort Lauderdale (KFLL)" = "KFLL",
+    "West Palm Beach (KPBI)" = "KPBI", "Key West (KEYW)"        = "KEYW",
+    "Pensacola (KPNS)"       = "KPNS", "Panama City (KECP)"     = "KECP")
+
+  output$unified_rpt_params <- renderUI({
+    tmpl <- input$unified_rpt_template %||% "alert_summary"
+    switch(tmpl,
+      alert_summary = fluidRow(
+        column(4, selectInput("urpt_days", "Report Period",
+          choices=c("1 day"=1,"7 days"=7,"14 days"=14,"30 days"=30), selected=7)),
+        column(4, selectInput("urpt_zone", "Zone",
+          choices=c("All Florida","North Florida","Central Florida","South Florida",
+                    "Tampa","Miami","Orlando","Jacksonville","Gainesville"),
+          selected="All Florida"))
+      ),
+      county_alerts = fluidRow(
+        column(6, selectInput("urpt_county", "County",
+          choices=.FL_COUNTIES_LIST, selected="All Florida"))
+      ),
+      weather_trends = fluidRow(
+        column(4, selectInput("urpt_icao", "Station", choices=.WX_CITIES_LIST, selected="KGNV")),
+        column(4, dateRangeInput("urpt_dates", "Date Range",
+          start=Sys.Date()-30, end=Sys.Date(), min=Sys.Date()-90, max=Sys.Date()))
+      ),
+      traffic_analysis = fluidRow(
+        column(4, selectInput("urpt_ta_county", "County",
+          choices=.FL_COUNTIES_LIST[-1], selected="Alachua")),  # no "All Florida" for traffic
+        column(4, dateInput("urpt_ta_date", "Date", value=Sys.Date()))
+      ),
+      census_impact = fluidRow(
+        column(8, selectInput("urpt_alert_id", "Alert",
+          choices=c("Loading..." = ""), selected=""))
+      ),
+      # BCP variants — all need user + asset
+      fluidRow(
+        column(4, selectInput("urpt_bcp_user", "User",
+          choices=c("-- select a user --"=""), selected="")),
+        column(4, selectInput("urpt_bcp_asset", "Asset / Property",
+          choices=c("Select a user first"=""), selected=""))
+      )
+    )
+  })
+
+  # Populate census alert dropdown when census impact template is selected
+  observeEvent(input$unified_rpt_template, {
+    if (input$unified_rpt_template == "census_impact") {
+      col <- tryCatch(mongo(collection="nws_alerts", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+      if (is.null(col)) return()
+      tryCatch({
+        alerts <- col$find('{}',
+          fields='{"alert_id":1,"event":1,"area_desc":1,"_id":1}',
+          sort='{"fetched_at":-1}', limit=50)
+        col$disconnect()
+        if (nrow(alerts) > 0) {
+          labels <- paste0(alerts$event, " — ", substr(alerts$area_desc, 1, 45))
+          ids    <- as.character(alerts$alert_id)
+          updateSelectInput(session, "urpt_alert_id",
+            choices=c("-- select alert --"="", setNames(ids, labels)))
+        }
+      }, error=function(e) tryCatch(col$disconnect(), error=function(e2) NULL))
+    }
+    # Populate BCP user list for BCP templates
+    if (grepl("^bcp_", input$unified_rpt_template)) {
+      col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+      if (is.null(col)) return()
+      tryCatch({
+        u <- col$find("{}", fields='{"username":1,"_id":0}')
+        col$disconnect()
+        unames  <- if (nrow(u) > 0) sort(u$username) else character(0)
+        choices <- c("-- select a user --"="", setNames(unames, unames))
+        updateSelectInput(session, "urpt_bcp_user", choices=choices)
+      }, error=function(e) tryCatch(col$disconnect(), error=function(e2) NULL))
+    }
+  })
+
+  # Populate BCP asset dropdown when user changes
+  observeEvent(input$urpt_bcp_user, {
+    uname <- input$urpt_bcp_user %||% ""
+    if (nchar(uname) == 0) return()
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) return()
+    tryCatch({
+      u      <- col$find(sprintf('{"username":"%s"}', uname), fields='{"assets":1,"_id":0}')
+      col$disconnect()
+      assets <- if (nrow(u) > 0 && !is.null(u$assets)) u$assets[[1]] else NULL
+      if (is.null(assets) || (is.data.frame(assets) && nrow(assets) == 0)) {
+        updateSelectInput(session, "urpt_bcp_asset", choices=c("No assets registered"=""))
+        return()
+      }
+      if (is.data.frame(assets)) {
+        choices <- setNames(as.character(assets$asset_id), assets$asset_name)
+      } else {
+        nms <- sapply(assets, function(a) a$asset_name %||% "Asset")
+        ids <- sapply(assets, function(a) a$asset_id   %||% "")
+        choices <- setNames(ids, nms)
+      }
+      updateSelectInput(session, "urpt_bcp_asset", choices=choices)
+    }, error=function(e) tryCatch(col$disconnect(), error=function(e2) NULL))
+  })
+
+  # Unified generate button
+  observeEvent(input$btn_unified_gen, {
+    if (!isTRUE(auth_rv$role %in% c("operator","admin"))) {
+      unified_rpt_status("Access denied."); return()
+    }
+    tmpl <- input$unified_rpt_template %||% "alert_summary"
+    unified_rpt_status("Generating PDF\u2026 (this may take 30\u201360 s)")
+    dir.create(rpt_output_dir, showWarnings=FALSE, recursive=TRUE)
+    timestamp <- format(Sys.time(), "%Y%m%d_%H%M")
+    do_email  <- isTRUE(input$unified_rpt_email)
+
+    tryCatch({
+      output_file <- switch(tmpl,
+        alert_summary = {
+          days  <- as.integer(input$urpt_days %||% 7)
+          zone  <- input$urpt_zone %||% "All Florida"
+          f <- file.path(rpt_output_dir, paste0("alert_summary_", gsub(" ","_",zone), "_", timestamp, ".pdf"))
+          withr::with_dir(tempdir(), rmarkdown::render(
+            "/home/ufuser/Fpren-main/reports/fpren_alert_report.Rmd",
+            output_file=f, intermediates_dir=tempdir(),
+            params=list(days_back=days, zone_label=zone, mongo_uri=MONGO_URI), quiet=TRUE))
+          f
+        },
+        county_alerts = {
+          county <- input$urpt_county %||% "All Florida"
+          f <- file.path(rpt_output_dir, paste0("county_alerts_", gsub("[^A-Za-z0-9]","_",county), "_", timestamp, ".pdf"))
+          withr::with_dir(tempdir(), rmarkdown::render(
+            "/home/ufuser/Fpren-main/reports/county_alerts_report.Rmd",
+            output_file=f, intermediates_dir=tempdir(),
+            params=list(county_name=county, date=format(Sys.Date(),"%Y-%m-%d"), mongo_uri=MONGO_URI), quiet=TRUE))
+          f
+        },
+        weather_trends = {
+          icao      <- input$urpt_icao %||% "KGNV"
+          city_name <- names(.WX_CITIES_LIST)[.WX_CITIES_LIST == icao]
+          if (length(city_name)==0) city_name <- icao
+          date_from <- as.character(input$urpt_dates[1] %||% (Sys.Date()-30))
+          date_to   <- as.character(input$urpt_dates[2] %||% Sys.Date())
+          f <- file.path(rpt_output_dir, paste0("weather_trends_", icao, "_", timestamp, ".pdf"))
+          withr::with_dir(tempdir(), rmarkdown::render(
+            "/home/ufuser/Fpren-main/reports/weather_trends_report.Rmd",
+            output_file=f, intermediates_dir=tempdir(),
+            params=list(icao=icao, city_name=city_name, date_from=date_from,
+                        date_to=date_to, mongo_uri=MONGO_URI), quiet=TRUE))
+          f
+        },
+        traffic_analysis = {
+          county <- input$urpt_ta_county %||% "Alachua"
+          date   <- as.character(input$urpt_ta_date %||% Sys.Date())
+          f <- file.path(rpt_output_dir, paste0("traffic_", gsub("[^A-Za-z0-9]","_",county), "_", timestamp, ".pdf"))
+          withr::with_dir(tempdir(), rmarkdown::render(
+            "/home/ufuser/Fpren-main/reports/traffic_analysis_report.Rmd",
+            output_file=f, intermediates_dir=tempdir(),
+            params=list(county=county, report_date=date, mongo_uri=MONGO_URI), quiet=TRUE))
+          f
+        },
+        census_impact = {
+          alert_id <- input$urpt_alert_id %||% ""
+          if (nchar(alert_id)==0) stop("Select an alert first.")
+          r   <- httr::GET(paste0(CENSUS_API,"/impact/",URLencode(alert_id)), httr::timeout(30))
+          dat <- httr::content(r, as="parsed", type="application/json")
+          if (!isTRUE(dat$ok)) stop(dat$message %||% "Impact API error")
+          alert <- dat$alert; imp <- alert$census_impact
+          counties_json <- tryCatch(jsonlite::toJSON(imp$county_data%||%list(), auto_unbox=TRUE), error=function(e) "{}")
+          f <- file.path(rpt_output_dir, paste0("census_impact_", gsub("[^A-Za-z0-9]","_", alert$event%||%"alert"), "_", timestamp, ".pdf"))
+          withr::with_dir(tempdir(), rmarkdown::render(
+            "/home/ufuser/Fpren-main/reports/census_impact_report.Rmd",
+            output_file=f, intermediates_dir=tempdir(),
+            params=list(alert_event=alert$event%||%"", alert_area=alert$area_desc%||%"",
+                        alert_severity=alert$severity%||%"", alert_headline=alert$headline%||%"",
+                        alert_description=alert$description%||%"",
+                        total_population=imp$total_population_at_risk%||%0,
+                        counties_json=as.character(counties_json),
+                        ai_analysis=imp$ai_analysis%||%"", mongo_uri=MONGO_URI), quiet=TRUE))
+          f
+        },
+        {
+          # All BCP variants
+          tmpl_map <- list(
+            bcp_general      = "/home/ufuser/Fpren-main/reports/business_continuity_report.Rmd",
+            bcp_broadcast    = "/home/ufuser/Fpren-main/reports/bcp_broadcast_facility.Rmd",
+            bcp_county_em    = "/home/ufuser/Fpren-main/reports/bcp_county_em.Rmd",
+            bcp_campus_police= "/home/ufuser/Fpren-main/reports/bcp_campus_police.Rmd"
+          )
+          rmd_file <- tmpl_map[[tmpl]]
+          if (is.null(rmd_file)) stop("Unknown template.")
+          uname    <- input$urpt_bcp_user  %||% ""
+          asset_id <- input$urpt_bcp_asset %||% ""
+          if (nchar(uname)==0 || nchar(asset_id)==0) stop("Select a user and asset.")
+          col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+          if (is.null(col)) stop("DB unavailable.")
+          u <- col$find(sprintf('{"username":"%s"}', uname), fields='{"assets":1,"_id":0}')
+          col$disconnect()
+          assets <- if (nrow(u)>0 && !is.null(u$assets)) u$assets[[1]] else NULL
+          asset  <- if (is.data.frame(assets)) {
+            row <- assets[assets$asset_id == asset_id, ]
+            if (nrow(row)==0) stop("Asset not found.") else as.list(row[1,])
+          } else {
+            a <- Filter(function(x) x$asset_id==asset_id, assets)
+            if (length(a)==0) stop("Asset not found.") else a[[1]]
+          }
+          f <- file.path(rpt_output_dir,
+            paste0("bcp_", sub("bcp_","",tmpl), "_", uname, "_", timestamp, ".pdf"))
+          withr::with_dir(tempdir(), rmarkdown::render(rmd_file,
+            output_file=f, intermediates_dir=tempdir(),
+            params=list(username=uname, asset_name=asset$asset_name%||%"",
+                        address=asset$address%||%"", lat=asset$lat%||%0,
+                        lon=asset$lon%||%0, zip=asset$zip%||%"",
+                        city=asset$city%||%"",
+                        nearest_airport_icao=asset$nearest_airport_icao%||%"KGNV",
+                        nearest_airport_name=asset$nearest_airport_name%||%"",
+                        asset_type=asset$asset_type%||%"", notes=asset$notes%||%"",
+                        mongo_uri=MONGO_URI, days_back=7L), quiet=TRUE))
+          f
+        }
+      )
+
+      # Optionally email
+      if (do_email) {
+        sc        <- tryCatch(jsonlite::fromJSON("/home/ufuser/Fpren-main/weather_rss/config/smtp_config.json"), error=function(e) list())
+        smtp_host <- sc$smtp_host %||% "smtp.ufl.edu"
+        smtp_port <- as.integer(sc$smtp_port %||% 25)
+        mail_from <- sc$mail_from %||% "lawrence.bornace@ufl.edu"
+        mail_to   <- sc$mail_to   %||% "lawrence.bornace@ufl.edu"
+        library(emayili)
+        em <- envelope() %>% from(mail_from) %>% to(mail_to) %>%
+          subject(paste0("FPREN Report — ", basename(output_file))) %>%
+          text(paste0("FPREN automated report attached.\nGenerated: ", format(Sys.time(), "%Y-%m-%d %H:%M:%S UTC"))) %>%
+          attachment(output_file)
+        server(host=smtp_host, port=smtp_port, reuse=FALSE)(em, verbose=FALSE)
+        unified_rpt_status(paste0("Saved & emailed: ", basename(output_file)))
+      } else {
+        unified_rpt_status(paste0("Saved: ", basename(output_file)))
+      }
+      showNotification(paste0("PDF saved: ", basename(output_file)), type="message")
+
+    }, error=function(e) {
+      unified_rpt_status(paste0("Error: ", conditionMessage(e)))
+      showNotification(conditionMessage(e), type="error")
+    })
+  })
 
   output$tbl_reports <- renderDT({
     input$btn_gen_report  # re-render after generation
@@ -3797,32 +4681,276 @@ server <- function(input, output, session) {
   user_mgmt_msg  <- reactiveVal("")
   user_mgmt_rv   <- reactiveVal(0)
 
+  # Store all user rows for profile card lookup
+  users_data_rv <- reactiveVal(NULL)
+
   output$users_table <- DT::renderDataTable({
     user_mgmt_rv()
     col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
     if (is.null(col)) return(data.frame(Message="DB unavailable"))
     tryCatch({
-      u <- col$find("{}", fields = '{"password":0,"verify_code":0,"reset_code":0,"invite_token":0,"_id":0}')
+      u <- col$find("{}", fields='{"password":0,"verify_code":0,"reset_code":0,"invite_token":0,"_id":0}')
       col$disconnect()
       if (nrow(u) == 0) return(data.frame(Message="No users found"))
-      # Select display columns
-      keep <- intersect(c("username","email","phone","role","active",
-                          "email_verified","phone_verified","last_login",
-                          "created_at","created_by"), names(u))
-      u[, keep, drop=FALSE]
-    }, error = function(e) {
+      users_data_rv(u)
+
+      gf <- function(field) if (field %in% names(u)) {
+        v <- u[[field]]
+        if (is.list(v)) sapply(v, function(x) if (is.null(x)||is.na(x)) "" else as.character(x))
+        else as.character(v)
+      } else rep("", nrow(u))
+
+      display <- data.frame(
+        Username   = gf("username"),
+        Name       = trimws(paste(gf("first_name"), gf("last_name"))),
+        Title      = gf("title"),
+        Profession = gf("profession"),
+        Role       = gf("role"),
+        Email      = gf("email"),
+        Active     = ifelse(gf("active") %in% c("TRUE","true"), "Yes", "No"),
+        `Last Login` = gf("last_login"),
+        stringsAsFactors = FALSE, check.names = FALSE
+      )
+      datatable(display, selection="single", rownames=FALSE,
+                options=list(pageLength=10, scrollX=TRUE))
+    }, error=function(e) {
       tryCatch(col$disconnect(), error=function(e2) NULL)
       data.frame(Error=conditionMessage(e))
     })
-  }, selection = "single", options = list(pageLength=10), rownames = FALSE)
+  }, selection="single", rownames=FALSE, options=list(pageLength=10))
+
+  # ── Profile card (appears when a row is selected) ────────────────────────────
+  edit_user_target <- reactiveVal(NULL)
+
+  .AVATAR_COLORS <- c("#003087","#1a6b3a","#884ea0","#e07020","#c0392b","#17a589","#1c2b6e")
+  .avatar_color  <- function(uname) .AVATAR_COLORS[(utf8ToInt(substr(uname,1,1))[[1]] %% length(.AVATAR_COLORS)) + 1]
+  .initials      <- function(first, last, uname) toupper(paste0(
+    substr(if(nchar(first)>0) first else uname, 1, 1), substr(last, 1, 1)))
+
+  output$user_profile_card <- renderUI({
+    sel <- input$users_table_rows_selected
+    u   <- users_data_rv()
+    if (is.null(sel) || length(sel)==0 || is.null(u) || nrow(u)<sel) return(NULL)
+
+    gf <- function(field) {
+      if (!field %in% names(u)) return("")
+      v <- u[[field]][sel]
+      if (is.null(v) || is.na(v) || v == "NULL") "" else as.character(v)
+    }
+
+    uname  <- gf("username")
+    first  <- gf("first_name"); last <- gf("last_name")
+    pic    <- gf("profile_pic_url")
+    bg     <- .avatar_color(uname)
+    ini    <- .initials(first, last, uname)
+    active_badge <- if (gf("active") %in% c("TRUE","true"))
+      tags$span(class="label label-success", "Active") else
+      tags$span(class="label label-danger", "Inactive")
+
+    avatar_ui <- if (nchar(pic) > 4)
+      tags$img(src=pic, style=sprintf("width:80px;height:80px;border-radius:50%%;object-fit:cover;border:3px solid %s;", bg))
+    else
+      tags$div(style=sprintf(
+        "width:80px;height:80px;border-radius:50%%;background:%s;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:26px;", bg), ini)
+
+    div(style="background:#f8f9fa;border:1px solid #dee2e6;border-radius:6px;padding:16px;margin-bottom:12px;",
+      fluidRow(
+        column(2, div(style="text-align:center;", avatar_ui)),
+        column(7,
+          tags$h4(style="margin:0 0 2px;",
+            if(nchar(trimws(paste(first,last)))>0) trimws(paste(first,last)) else uname),
+          tags$p(style="margin:0;color:#555;font-size:13px;",
+            if(nchar(gf("title"))>0) paste0(gf("title"), " — "), gf("department")),
+          tags$p(style="margin:4px 0 0;font-size:13px;",
+            icon("envelope"), " ", gf("email"), tags$span(style="margin:0 8px;","·"),
+            icon("phone"), " ", gf("phone")),
+          tags$p(style="margin:4px 0 0;font-size:12px;color:#666;",
+            tags$b("Role:"), " ", gf("role"), "  ",
+            tags$b("Profession:"), " ", gf("profession"), "  ",
+            active_badge),
+          if(nchar(gf("notes"))>0)
+            tags$p(style="margin:6px 0 0;font-size:12px;font-style:italic;color:#777;", gf("notes"))
+        ),
+        column(3, style="text-align:right;padding-top:10px;",
+          actionButton("btn_edit_user", tagList(icon("user-edit"), " Edit Profile"),
+                       class="btn-info btn-sm"),
+          br(), br(),
+          actionButton("btn_delete_user", tagList(icon("user-minus"), " Delete"),
+                       class="btn-danger btn-sm")
+        )
+      )
+    )
+  })
+
+  # Open edit modal when Edit Profile is clicked
+  observeEvent(input$btn_edit_user, {
+    if (!isTRUE(auth_rv$role == "admin")) return()
+    sel <- input$users_table_rows_selected
+    u   <- users_data_rv()
+    if (is.null(sel) || length(sel)==0 || is.null(u) || nrow(u)<sel) {
+      showNotification("Select a user row first.", type="warning"); return()
+    }
+
+    gf <- function(field) {
+      if (!field %in% names(u)) return("")
+      v <- u[[field]][sel]
+      if (is.null(v) || is.na(v) || identical(v, "NULL")) "" else as.character(v)
+    }
+    uname  <- gf("username")
+    first  <- gf("first_name"); last <- gf("last_name")
+    pic    <- gf("profile_pic_url")
+    bg     <- .avatar_color(uname)
+    ini    <- .initials(first, last, uname)
+
+    avatar_ui <- if (nchar(pic) > 4)
+      tags$img(src=pic, style=sprintf("width:80px;height:80px;border-radius:50%%;object-fit:cover;border:3px solid %s;display:block;margin:0 auto;", bg))
+    else
+      tags$div(style=sprintf(
+        "width:80px;height:80px;border-radius:50%%;background:%s;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:26px;margin:0 auto;", bg), ini)
+
+    edit_user_target(list(username=uname))
+
+    showModal(modalDialog(
+      title = tagList(icon("user-edit"), " Edit User Profile — ", tags$b(uname)),
+      size  = "l", easyClose = FALSE,
+      fluidRow(
+        # Left column: avatar + account status
+        column(3,
+          div(style="text-align:center;padding:8px;",
+            avatar_ui, br(),
+            textInput("edit_pic_url", "Profile Picture URL",
+              value=pic, placeholder="https://example.com/photo.jpg"),
+            tags$small(style="color:#888;", "Paste any public image URL"),
+            hr(),
+            tags$b("Account"),
+            checkboxInput("edit_active", "Account Active",
+              value = gf("active") %in% c("TRUE","true")),
+            tags$small(style="color:#666;display:block;line-height:1.8;",
+              icon("envelope-open"), " Email: ",
+              if(gf("email_verified") %in% c("TRUE","true")) "\u2705 verified" else "\u274c unverified", br(),
+              icon("mobile-alt"), " Phone: ",
+              if(gf("phone_verified") %in% c("TRUE","true")) "\u2705 verified" else "\u274c unverified", br(),
+              icon("calendar"), " Created: ", substr(gf("created_at"),1,10)
+            )
+          )
+        ),
+        # Right column: all editable fields
+        column(9,
+          h5(style="color:#003087;border-bottom:1px solid #dee2e6;padding-bottom:6px;",
+             icon("id-card"), " Personal Information"),
+          fluidRow(
+            column(6, textInput("edit_first_name", "First Name",
+              value=first, placeholder="Jane")),
+            column(6, textInput("edit_last_name", "Last Name",
+              value=last, placeholder="Smith"))
+          ),
+          fluidRow(
+            column(6, textInput("edit_title", "Job Title",
+              value=gf("title"), placeholder="Chief Engineer")),
+            column(6, textInput("edit_department", "Department / Organization",
+              value=gf("department"), placeholder="WUFT Engineering"))
+          ),
+          h5(style="color:#003087;border-bottom:1px solid #dee2e6;padding-bottom:6px;margin-top:14px;",
+             icon("address-book"), " Contact & Access"),
+          fluidRow(
+            column(6, textInput("edit_email", "Email",
+              value=gf("email"), placeholder="user@ufl.edu")),
+            column(6, textInput("edit_phone", "Phone",
+              value=gf("phone"), placeholder="+13525551234"))
+          ),
+          fluidRow(
+            column(6, selectInput("edit_role", "Dashboard Role",
+              choices=c("admin","operator","viewer"), selected=gf("role"))),
+            column(6, selectInput("edit_profession", "Profession",
+              choices=c(
+                list("-- Select --"=""),
+                list(
+                  "Broadcast"=c("Broadcast Engineer"="Broadcast Engineer",
+                    "Broadcast Administrator"="Broadcast Administrator",
+                    "Broadcast Operator"="Broadcast Operator",
+                    "Program Director"="Program Director",
+                    "Chief Engineer"="Chief Engineer",
+                    "News Director"="News Director",
+                    "Production Manager"="Production Manager"),
+                  "Law Enforcement"=c("Police Chief"="Police Chief",
+                    "Police Lieutenant"="Police Lieutenant",
+                    "Police Officer"="Police Officer",
+                    "Campus Security Officer"="Campus Security Officer",
+                    "Dispatch Coordinator"="Dispatch Coordinator",
+                    "Emergency Services Coordinator"="Emergency Services Coordinator"),
+                  "Emergency Management"=c("County Emergency Manager"="County Emergency Manager",
+                    "City Administrator"="City Administrator",
+                    "Public Safety Director"="Public Safety Director",
+                    "EOC Coordinator"="EOC Coordinator",
+                    "FEMA Liaison"="FEMA Liaison",
+                    "Hazmat Coordinator"="Hazmat Coordinator"),
+                  "General"=c("Facility Manager"="Facility Manager",
+                    "IT/Systems Administrator"="IT/Systems Administrator",
+                    "Station Manager"="Station Manager","Other"="Other")
+                )
+              ), selected=gf("profession")))
+          ),
+          h5(style="color:#003087;border-bottom:1px solid #dee2e6;padding-bottom:6px;margin-top:14px;",
+             icon("sticky-note"), " Notes"),
+          textAreaInput("edit_notes", NULL, value=gf("notes"), rows=3,
+            placeholder="Any additional notes about this user\u2026", width="100%")
+        )
+      ),
+      footer = tagList(
+        actionButton("btn_save_user_profile", "Save Profile",
+                     class="btn-success btn-lg", icon=icon("save")),
+        modalButton("Cancel")
+      )
+    ))
+  })
+
+  # Save profile to MongoDB
+  observeEvent(input$btn_save_user_profile, {
+    target <- edit_user_target()
+    if (is.null(target)) return()
+    uname <- target$username %||% ""
+    if (nchar(uname)==0) return()
+
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { showNotification("DB unavailable.", type="error"); return() }
+    tryCatch({
+      update_doc <- list(
+        `$set` = list(
+          first_name      = input$edit_first_name  %||% "",
+          last_name       = input$edit_last_name   %||% "",
+          title           = input$edit_title       %||% "",
+          department      = input$edit_department  %||% "",
+          email           = input$edit_email       %||% "",
+          phone           = input$edit_phone       %||% "",
+          role            = input$edit_role        %||% "viewer",
+          profession      = input$edit_profession  %||% "",
+          active          = isTRUE(input$edit_active),
+          profile_pic_url = input$edit_pic_url     %||% "",
+          notes           = input$edit_notes       %||% ""
+        )
+      )
+      col$update(sprintf('{"username":"%s"}', uname),
+                 jsonlite::toJSON(update_doc, auto_unbox=TRUE))
+      col$disconnect()
+      log_audit("user_edit", uname, auth_rv$username %||% "admin",
+                paste("Profile updated for", uname))
+      removeModal()
+      user_mgmt_rv(user_mgmt_rv() + 1)
+      showNotification(paste("Profile saved for", uname), type="message")
+    }, error=function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL)
+      showNotification(paste("Save error:", conditionMessage(e)), type="error")
+    })
+  })
 
   observeEvent(input$btn_add_user, {
     if (!isTRUE(auth_rv$role == "admin")) {
       user_mgmt_msg("Admin role required."); return()
     }
-    email <- trimws(input$new_user_email)
-    phone <- trimws(input$new_user_phone)
-    role  <- input$new_user_role
+    email      <- trimws(input$new_user_email)
+    phone      <- trimws(input$new_user_phone)
+    role       <- input$new_user_role
+    profession <- input$new_user_profession %||% ""
     if (nchar(email) == 0) { user_mgmt_msg("Email is required."); return() }
 
     # Derive username from email prefix
@@ -3843,6 +4971,7 @@ server <- function(input, output, session) {
         phone                = phone,
         password             = pw_hash,
         role                 = role,
+        profession           = profession,
         active               = TRUE,
         email_verified       = FALSE,
         phone_verified       = FALSE,
@@ -3865,20 +4994,40 @@ server <- function(input, output, session) {
       return()
     })
 
-    # Send invite email
+    # Send invite email (polished HTML)
     send_fpren_email(email,
-      "You have been invited to the FPREN Dashboard",
+      paste0("[FPREN] Your dashboard account — username: ", uname),
       paste0(
-        "<h2>Welcome to FPREN Dashboard</h2>",
-        "<p>An account has been created for you on the Florida Public Radio Emergency Network dashboard.</p>",
-        "<table style='border-collapse:collapse;margin:16px 0;'>",
-        "<tr><td style='padding:4px 12px 4px 0;font-weight:bold;'>Username:</td><td>", uname, "</td></tr>",
-        "<tr><td style='padding:4px 12px 4px 0;font-weight:bold;'>Temporary Password:</td><td>", temp_pw, "</td></tr>",
-        "<tr><td style='padding:4px 12px 4px 0;font-weight:bold;'>Role:</td><td>", role, "</td></tr>",
+        "<div style='background:#003087;color:white;padding:20px 24px;border-radius:6px 6px 0 0;'>",
+        "<h2 style='margin:0;font-size:22px;'>FPREN Dashboard Invitation</h2>",
+        "<p style='margin:4px 0 0;opacity:0.85;font-size:14px;'>Florida Public Radio Emergency Network</p></div>",
+        "<div style='background:#f9f9f9;padding:20px 24px;border:1px solid #ddd;border-top:none;border-radius:0 0 6px 6px;'>",
+        "<p>Hello,</p>",
+        "<p>An account has been created for you on the <strong>FPREN Dashboard</strong>. ",
+        "Use the credentials below to log in for the first time.</p>",
+        "<table style='border-collapse:collapse;margin:16px 0;background:#fff;border:1px solid #ddd;width:100%;'>",
+        "<tr style='background:#003087;color:white;'><th style='padding:8px 12px;text-align:left;'>Field</th><th style='padding:8px 12px;text-align:left;'>Value</th></tr>",
+        "<tr><td style='padding:8px 12px;border-bottom:1px solid #eee;font-weight:bold;'>Dashboard URL</td>",
+        "<td style='padding:8px 12px;border-bottom:1px solid #eee;'><a href='https://128.227.67.234'>https://128.227.67.234</a></td></tr>",
+        "<tr><td style='padding:8px 12px;border-bottom:1px solid #eee;font-weight:bold;'>Username</td>",
+        "<td style='padding:8px 12px;border-bottom:1px solid #eee;font-family:monospace;font-size:15px;'>", uname, "</td></tr>",
+        "<tr><td style='padding:8px 12px;border-bottom:1px solid #eee;font-weight:bold;'>Temporary Password</td>",
+        "<td style='padding:8px 12px;border-bottom:1px solid #eee;font-family:monospace;font-size:15px;color:#c00;'>", temp_pw, "</td></tr>",
+        "<tr><td style='padding:8px 12px;border-bottom:1px solid #eee;font-weight:bold;'>Role</td>",
+        "<td style='padding:8px 12px;border-bottom:1px solid #eee;'>", role, "</td></tr>",
+        if (nchar(profession) > 0) paste0(
+          "<tr><td style='padding:8px 12px;font-weight:bold;'>Profession</td>",
+          "<td style='padding:8px 12px;'>", profession, "</td></tr>"
+        ) else "",
         "</table>",
-        "<p><strong>You will be required to change your password on first login.</strong></p>",
-        "<p>Dashboard URL: <a href='https://128.227.67.234'>https://128.227.67.234</a></p>",
-        "<p>For help, contact <a href='mailto:lawrence.bornace@ufl.edu'>lawrence.bornace@ufl.edu</a></p>"
+        "<div style='background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:12px 16px;margin:16px 0;'>",
+        "<strong>Important:</strong> You will be required to change your password on first login, ",
+        "then complete SMS and email verification before accessing the dashboard.",
+        "</div>",
+        "<p>Your account will be automatically disabled after <strong>6 months of inactivity</strong>. ",
+        "Log in at least once every 6 months to keep your account active.</p>",
+        "<p>For help or to report issues, contact <a href='mailto:lawrence.bornace@ufl.edu'>lawrence.bornace@ufl.edu</a>.</p>",
+        "</div>"
       ))
 
     # Log and notify
@@ -3899,6 +5048,7 @@ server <- function(input, output, session) {
     user_mgmt_msg(paste("User", uname, "created and invite sent to", email))
     updateTextInput(session, "new_user_email", value="")
     updateTextInput(session, "new_user_phone", value="")
+    updateSelectInput(session, "new_user_profession", selected="")
     user_mgmt_rv(user_mgmt_rv() + 1)
   })
 
@@ -3969,6 +5119,582 @@ server <- function(input, output, session) {
   })
 
   output$user_mgmt_status <- renderText({ user_mgmt_msg() })
+
+  # ── User Assets Management (Admin Only) ─────────────────────────────────────
+  asset_mgmt_msg <- reactiveVal("")
+  asset_mgmt_rv  <- reactiveVal(0)
+
+  output$asset_mgmt_status <- renderText({ asset_mgmt_msg() })
+
+  # Populate the user dropdowns for both asset management and BCP generation
+  observe({
+    user_mgmt_rv()  # refresh when users change
+    if (!isTRUE(auth_rv$role == "admin")) return()
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) return()
+    tryCatch({
+      u <- col$find("{}", fields='{"username":1,"_id":0}')
+      col$disconnect()
+      unames <- if (nrow(u) > 0) sort(u$username) else character(0)
+      choices <- c("-- select a user --" = "", setNames(unames, unames))
+      updateSelectInput(session, "asset_mgmt_user", choices = choices)
+      updateSelectInput(session, "bcp_username",    choices = choices)
+    }, error=function(e) { tryCatch(col$disconnect(), error=function(e2) NULL) })
+  })
+
+  # Load assets table when user is selected or refresh triggered
+  output$user_assets_table <- DT::renderDataTable({
+    asset_mgmt_rv()
+    uname <- input$asset_mgmt_user
+    if (is.null(uname) || nchar(uname) == 0)
+      return(data.frame(Message="Select a user above to view their assets"))
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) return(data.frame(Error="DB unavailable"))
+    tryCatch({
+      u <- col$find(sprintf('{"username":"%s"}', uname), fields='{"assets":1,"_id":0}')
+      col$disconnect()
+      if (nrow(u) == 0 || is.null(u$assets) || length(u$assets[[1]]) == 0)
+        return(data.frame(Message="No assets registered for this user"))
+      assets <- u$assets[[1]]
+      if (!is.data.frame(assets)) assets <- as.data.frame(do.call(rbind, assets))
+      keep <- intersect(c("asset_name","address","city","zip","asset_type",
+                          "lat","lon","nearest_airport_icao","notes","asset_id"), names(assets))
+      assets[, keep, drop=FALSE]
+    }, error=function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL)
+      data.frame(Error=conditionMessage(e))
+    })
+  }, selection="single", options=list(pageLength=10, scrollX=TRUE), rownames=FALSE)
+
+  # Shared geocode helper — calls /api/lookup/geocode with address + zip
+  .do_geocode <- function(address, zip) {
+    params <- list()
+    if (nchar(trimws(address)) > 0) params[["address"]] <- trimws(address)
+    if (nchar(trimws(zip))     > 0) params[["zip"]]     <- trimws(zip)
+    if (length(params) == 0) return(list(ok=FALSE, message="No input"))
+    tryCatch({
+      r <- httr::GET("http://localhost:5000/api/lookup/geocode",
+                     query = params, httr::timeout(15))
+      httr::content(r, as="parsed", type="application/json")
+    }, error=function(e) list(ok=FALSE, message=conditionMessage(e)))
+  }
+
+  .apply_geocode_result <- function(result) {
+    if (!isTRUE(result$ok)) {
+      asset_mgmt_msg(paste0("Lookup failed: ", result$message %||% "unknown error"))
+      return()
+    }
+    updateNumericInput(session, "new_asset_lat", value = result$lat)
+    updateNumericInput(session, "new_asset_lon", value = result$lon)
+    updateSelectInput(session, "new_asset_city_sel",
+      choices = c(result$city), selected = result$city)
+    updateSelectInput(session, "new_asset_airport_sel",
+      choices  = c(paste0(result$nearest_airport_icao, " \u2014 ", result$nearest_airport_name)),
+      selected = paste0(result$nearest_airport_icao, " \u2014 ", result$nearest_airport_name))
+    src_label <- if (identical(result$source, "nominatim")) "address geocode" else "ZIP centroid"
+    asset_mgmt_msg(paste0(
+      "\u2713 Auto-filled from ", src_label, ": ",
+      result$county, " county \u2192 ", result$city,
+      " (", result$lat, ", ", result$lon, ") / ", result$nearest_airport_icao
+    ))
+  }
+
+  # Auto-populate when ZIP reaches 5 digits (with or without address)
+  addr_zip <- reactive({
+    list(address = input$new_asset_address %||% "",
+         zip     = input$new_asset_zip     %||% "")
+  })
+  addr_zip_d <- debounce(addr_zip, 900)  # wait 900 ms after last keystroke
+
+  observe({
+    vals <- addr_zip_d()
+    zip  <- trimws(vals$zip)
+    addr <- trimws(vals$address)
+    # Only fire when ZIP is complete (5 digits)
+    if (!grepl("^\\d{5}$", zip)) return()
+    .apply_geocode_result(.do_geocode(addr, zip))
+  })
+
+  # Manual button still works as a fallback
+  observeEvent(input$btn_lookup_zip, {
+    result <- .do_geocode(
+      input$new_asset_address %||% "",
+      input$new_asset_zip     %||% ""
+    )
+    .apply_geocode_result(result)
+  })
+
+  output$new_asset_city_ui <- renderUI({
+    selectInput("new_asset_city_sel", "City (nearest)", choices=character(0))
+  })
+  output$new_asset_airport_ui <- renderUI({
+    selectInput("new_asset_airport_sel", "Nearest Airport", choices=character(0))
+  })
+
+  # Add asset — writes directly to MongoDB, fetches nearby resources via public API
+  observeEvent(input$btn_add_asset, {
+    if (!isTRUE(auth_rv$role == "admin")) { asset_mgmt_msg("Admin required."); return() }
+    uname <- input$asset_mgmt_user
+    if (is.null(uname) || nchar(uname) == 0) { asset_mgmt_msg("Select a user first."); return() }
+    aname <- trimws(input$new_asset_name)
+    if (nchar(aname) == 0) { asset_mgmt_msg("Asset name is required."); return() }
+
+    apt_sel  <- input$new_asset_airport_sel %||% ""
+    apt_icao <- trimws(strsplit(apt_sel, " ")[[1]][1])
+    apt_name <- if (nchar(apt_sel) > 6) trimws(sub("^\\S+\\s+[—-]+\\s*", "", apt_sel)) else apt_sel
+
+    lat <- as.numeric(input$new_asset_lat %||% 0)
+    lon <- as.numeric(input$new_asset_lon %||% 0)
+    if (is.na(lat)) lat <- 0
+    if (is.na(lon)) lon <- 0
+
+    asset_mgmt_msg("Adding asset and fetching nearby emergency resources (may take ~10 s)...")
+
+    # Fetch nearby resources via the public (no-auth) Flask endpoint
+    nearby <- list(fire_stations = list(), hospitals = list(), supermarkets = list())
+    if (lat != 0 && lon != 0) {
+      nearby <- tryCatch({
+        r <- httr::GET(
+          sprintf("http://localhost:5000/api/lookup/nearby-resources?lat=%s&lon=%s&radius_m=5000",
+                  lat, lon),
+          httr::timeout(25)
+        )
+        d <- httr::content(r, as = "parsed", type = "application/json")
+        if (isTRUE(d$ok)) {
+          list(
+            fire_stations = d$fire_stations %||% list(),
+            hospitals     = d$hospitals     %||% list(),
+            supermarkets  = d$supermarkets  %||% list()
+          )
+        } else nearby
+      }, error = function(e) nearby)
+    }
+
+    new_asset <- list(
+      asset_id             = paste0(sample(c(letters, LETTERS, 0:9), 16, replace=TRUE), collapse=""),
+      asset_name           = aname,
+      address              = trimws(input$new_asset_address %||% ""),
+      lat                  = lat,
+      lon                  = lon,
+      zip                  = trimws(input$new_asset_zip %||% ""),
+      city                 = trimws(input$new_asset_city_sel %||% ""),
+      nearest_airport_icao = apt_icao,
+      nearest_airport_name = apt_name,
+      asset_type           = input$new_asset_type %||% "Facility",
+      notes                = trimws(input$new_asset_notes %||% ""),
+      nearby_fire_stations = nearby$fire_stations,
+      nearby_hospitals     = nearby$hospitals,
+      nearby_supermarkets  = nearby$supermarkets,
+      created_at           = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz="UTC")
+    )
+
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { asset_mgmt_msg("DB unavailable."); return() }
+    tryCatch({
+      col$update(
+        sprintf('{"username":"%s"}', uname),
+        sprintf('{"$push":{"assets":%s}}', jsonlite::toJSON(new_asset, auto_unbox=TRUE))
+      )
+      col$disconnect()
+      n_fire <- length(nearby$fire_stations)
+      n_hosp <- length(nearby$hospitals)
+      n_mkt  <- length(nearby$supermarkets)
+      asset_mgmt_msg(paste0(
+        "Asset '", aname, "' added to ", uname, ". ",
+        "Nearby resources: ", n_fire, " fire station(s), ",
+        n_hosp, " hospital(s), ", n_mkt, " supermarket(s)."
+      ))
+      asset_mgmt_rv(asset_mgmt_rv() + 1)
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL)
+      asset_mgmt_msg(paste("Error adding asset:", conditionMessage(e)))
+    })
+  })
+
+  # Load assets button
+  observeEvent(input$btn_load_user_assets, { asset_mgmt_rv(asset_mgmt_rv() + 1) })
+
+  # Delete selected asset
+  observeEvent(input$btn_delete_asset, {
+    if (!isTRUE(auth_rv$role == "admin")) return()
+    uname <- input$asset_mgmt_user
+    sel   <- input$user_assets_table_rows_selected
+    if (is.null(uname) || nchar(uname) == 0 || is.null(sel) || length(sel) == 0) {
+      asset_mgmt_msg("Select a user and an asset row first."); return()
+    }
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { asset_mgmt_msg("DB unavailable."); return() }
+    tryCatch({
+      u <- col$find(sprintf('{"username":"%s"}', uname), fields='{"assets":1,"_id":0}')
+      assets <- if (nrow(u) > 0 && !is.null(u$assets)) u$assets[[1]] else NULL
+      if (is.null(assets) || (is.data.frame(assets) && nrow(assets) < sel)) {
+        col$disconnect(); asset_mgmt_msg("Asset not found."); return()
+      }
+      asset_id <- if (is.data.frame(assets)) as.character(assets$asset_id[sel])
+                  else as.character(assets[[sel]]$asset_id)
+      col$update(
+        sprintf('{"username":"%s"}', uname),
+        sprintf('{"$pull":{"assets":{"asset_id":"%s"}}}', asset_id)
+      )
+      col$disconnect()
+      asset_mgmt_msg("Asset removed.")
+      asset_mgmt_rv(asset_mgmt_rv() + 1)
+    }, error=function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL)
+      asset_mgmt_msg(paste("Error:", conditionMessage(e)))
+    })
+  })
+
+  # Nearby resources panel — shown when a row is selected in the assets table
+  output$asset_nearby_panel <- renderUI({
+    sel   <- input$user_assets_table_rows_selected
+    uname <- input$asset_mgmt_user
+    asset_mgmt_rv()
+    if (is.null(sel) || length(sel) == 0 || is.null(uname) || nchar(uname) == 0)
+      return(NULL)
+
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) return(NULL)
+    asset <- tryCatch({
+      u <- col$find(sprintf('{"username":"%s"}', uname), fields='{"assets":1,"_id":0}')
+      col$disconnect()
+      if (nrow(u) == 0 || is.null(u$assets)) return(NULL)
+      assets <- u$assets[[1]]
+      if (is.data.frame(assets) && nrow(assets) >= sel) as.list(assets[sel, ]) else NULL
+    }, error=function(e) { tryCatch(col$disconnect(), error=function(e2) NULL); NULL })
+
+    if (is.null(asset)) return(NULL)
+
+    fire  <- asset$nearby_fire_stations %||% list()
+    hosp  <- asset$nearby_hospitals     %||% list()
+    mkts  <- asset$nearby_supermarkets  %||% list()
+
+    # If lists came back as data frames (mongolite), convert to list of lists
+    .to_list <- function(x) {
+      if (is.data.frame(x) && nrow(x) > 0) lapply(seq_len(nrow(x)), function(i) as.list(x[i,]))
+      else if (is.list(x)) x else list()
+    }
+    fire <- .to_list(fire); hosp <- .to_list(hosp); mkts <- .to_list(mkts)
+
+    if (length(fire) == 0 && length(hosp) == 0 && length(mkts) == 0) {
+      return(div(style="margin-top:8px;",
+        tags$small(style="color:#888;",
+          icon("info-circle"),
+          " No nearby resources found for this asset. Resources are fetched automatically when an asset is added with valid coordinates."
+        )
+      ))
+    }
+
+    .resource_row <- function(r, icon_name, color) {
+      dist_txt <- if (!is.null(r$dist_km) && !is.na(r$dist_km))
+        paste0(" (", r$dist_km, " km)") else ""
+      tags$li(
+        tags$span(style=paste0("color:", color, ";"), icon(icon_name)),
+        tags$strong(r$name %||% "Unknown"),
+        dist_txt,
+        if (!is.null(r$address) && nchar(r$address %||% "") > 0)
+          tags$span(style="color:#666; font-size:11px;", paste0(" — ", r$address))
+        else NULL,
+        if (!is.null(r$phone) && nchar(r$phone %||% "") > 0)
+          tags$span(style="color:#444; font-size:11px;", paste0(" | ", r$phone))
+        else NULL
+      )
+    }
+
+    tagList(
+      hr(),
+      h5(icon("map-marker"), paste0(" Nearby Resources — ", asset$asset_name %||% "")),
+      p(tags$small(style="color:#666;",
+        "Auto-populated from OpenStreetMap within 5 km of asset coordinates.")),
+      fluidRow(
+        column(4,
+          tags$h6(icon("fire-extinguisher"), tags$strong(paste0(" Fire Stations (", length(fire), ")"))),
+          if (length(fire) == 0)
+            tags$p(tags$small(style="color:#999;", "None found within 5 km"))
+          else
+            tags$ul(style="padding-left:16px; font-size:13px;",
+              lapply(fire, .resource_row, icon_name="fire", color="#c0392b"))
+        ),
+        column(4,
+          tags$h6(icon("hospital"), tags$strong(paste0(" Hospitals (", length(hosp), ")"))),
+          if (length(hosp) == 0)
+            tags$p(tags$small(style="color:#999;", "None found within 5 km"))
+          else
+            tags$ul(style="padding-left:16px; font-size:13px;",
+              lapply(hosp, .resource_row, icon_name="plus-square", color="#2980b9"))
+        ),
+        column(4,
+          tags$h6(icon("shopping-cart"), tags$strong(paste0(" Supermarkets / Water (", length(mkts), ")"))),
+          if (length(mkts) == 0)
+            tags$p(tags$small(style="color:#999;", "None found within 5 km"))
+          else
+            tags$ul(style="padding-left:16px; font-size:13px;",
+              lapply(mkts, .resource_row, icon_name="shopping-basket", color="#27ae60"))
+        )
+      )
+    )
+  })
+
+  # Template selector — hidden when "All Facilities" is chosen (uses profession-mapped template)
+  output$bcp_template_selector <- renderUI({
+    asset_id <- input$bcp_asset_id %||% ""
+    if (asset_id == "__all__") {
+      div(style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:8px 12px;margin-bottom:8px;",
+        icon("info-circle"),
+        tags$small(" Each asset's BCP template is automatically chosen based on the user's profession.",
+                   " Broadcast → Broadcast Facility template, Law Enforcement → Campus Police template,",
+                   " Emergency Management → County EM template, others → General template.")
+      )
+    } else {
+      selectInput("bcp_template", "BCP Template",
+        choices = c(
+          "General Facility (default)"    = "general",
+          "Broadcast Facility & Staff"    = "broadcast",
+          "County Emergency Management"   = "county_em",
+          "Campus Police Force"           = "campus_police"
+        ), selected = "general")
+    }
+  })
+
+  # Update asset selector and auto-select BCP template when BCP username changes
+  observeEvent(input$bcp_username, {
+    uname <- input$bcp_username
+    if (is.null(uname) || nchar(uname) == 0) {
+      updateSelectInput(session, "bcp_asset_id", choices=c("Select a user first"=""))
+      return()
+    }
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) return()
+    tryCatch({
+      u <- col$find(sprintf('{"username":"%s"}', uname),
+                    fields='{"assets":1,"profession":1,"_id":0}')
+      col$disconnect()
+
+      # Auto-select BCP template based on profession
+      prof <- if (nrow(u) > 0 && !is.null(u$profession) && length(u$profession) > 0)
+                as.character(u$profession[[1]]) else ""
+      tmpl <- if (nchar(prof) > 0) PROFESSION_TEMPLATE_MAP[prof] %||% "general" else "general"
+      updateSelectInput(session, "bcp_template", selected = tmpl)
+
+      # Populate asset dropdown — include "All Facilities" at top
+      assets <- if (nrow(u) > 0 && !is.null(u$assets)) u$assets[[1]] else NULL
+      if (is.null(assets) || (is.data.frame(assets) && nrow(assets) == 0)) {
+        updateSelectInput(session, "bcp_asset_id",
+          choices = c("No assets registered for this user" = ""))
+        return()
+      }
+      if (is.data.frame(assets)) {
+        asset_choices <- setNames(as.character(assets$asset_id), assets$asset_name)
+      } else {
+        nms <- sapply(assets, function(a) a$asset_name %||% "Asset")
+        ids <- sapply(assets, function(a) a$asset_id   %||% "")
+        asset_choices <- setNames(ids, nms)
+      }
+      updateSelectInput(session, "bcp_asset_id",
+        choices = c("All Facilities (batch generate)" = "__all__", asset_choices))
+    }, error=function(e) { tryCatch(col$disconnect(), error=function(e2) NULL) })
+  })
+
+  # ── BCP Report Generation ────────────────────────────────────────────────────
+  bcp_status_msg <- reactiveVal("")
+  output$bcp_status <- renderText({ bcp_status_msg() })
+
+  output$profession_bcp_hint <- renderUI({
+    prof <- input$new_user_profession %||% ""
+    if (nchar(prof) == 0) return(NULL)
+    tmpl <- PROFESSION_TEMPLATE_MAP[prof]
+    if (is.na(tmpl)) return(NULL)
+    info <- switch(tmpl,
+      broadcast     = list(icon="broadcast-tower", color="#e07020", label="Broadcast Facility & Staff"),
+      campus_police = list(icon="shield-alt",      color="#1c2b6e", label="Campus Police Force"),
+      county_em     = list(icon="map",             color="#1a6b3a", label="County Emergency Management"),
+      list(icon="info-circle", color="#666", label="General Facility")
+    )
+    tags$small(style=paste0("color:", info$color, ";"),
+      icon(info$icon), " BCP template will auto-select: ", tags$strong(info$label))
+  })
+
+  output$bcp_template_desc <- renderUI({
+    desc <- switch(input$bcp_template %||% "general",
+      general = tags$small(style="color:#666;",
+        icon("info-circle"),
+        " General facility BCP: weather risk, alerts, traffic, evacuation zones, census, and recommendations."),
+      broadcast = tags$small(style="color:#e07020;",
+        icon("broadcast-tower"),
+        " Broadcast Facility: equipment checklist, staff roles, FCC obligations, on-air continuity, and Icecast stream health."),
+      county_em = tags$small(style="color:#1a6b3a;",
+        icon("map"),
+        " County EM: evacuation zone thresholds, EOC activation levels, mass notification coordination, and FEMA recovery timeline."),
+      campus_police = tags$small(style="color:#1c2b6e;",
+        icon("shield-alt"),
+        " Campus Police: sector deployment, vulnerable population protocols, inter-agency coordination, and vehicle/equipment checklists.")
+    )
+    div(style="margin:-6px 0 8px 0;", desc)
+  })
+
+  output$tbl_bcp_reports <- renderDT({
+    input$btn_gen_bcp
+    files <- list.files(rpt_output_dir, pattern="^bcp_.*\\.pdf$", full.names=FALSE)
+    if (length(files) == 0) return(datatable(data.frame(Message="No BCP reports yet")))
+    df <- data.frame(File=sort(files, decreasing=TRUE), stringsAsFactors=FALSE)
+    datatable(df, options=list(pageLength=10), rownames=FALSE, selection="none")
+  })
+
+  # Helper: render one BCP PDF for a single asset
+  .render_one_bcp <- function(uname, asset, tmpl_key, output_dir, timestamp) {
+    template_map <- list(
+      general       = "/home/ufuser/Fpren-main/reports/business_continuity_report.Rmd",
+      broadcast     = "/home/ufuser/Fpren-main/reports/bcp_broadcast_facility.Rmd",
+      county_em     = "/home/ufuser/Fpren-main/reports/bcp_county_em.Rmd",
+      campus_police = "/home/ufuser/Fpren-main/reports/bcp_campus_police.Rmd"
+    )
+    tmpl_file  <- template_map[[tmpl_key]] %||% template_map[["general"]]
+    tmpl_label <- switch(tmpl_key,
+      broadcast="Broadcast", county_em="CountyEM", campus_police="CampusPolice", "General")
+    safe_name  <- gsub("[^A-Za-z0-9]", "_", asset$asset_name %||% "asset")
+    out_file   <- file.path(output_dir,
+      paste0("bcp_", tmpl_label, "_", uname, "_", safe_name, "_", timestamp, ".pdf"))
+    lat <- tryCatch(as.numeric(asset$lat), error=function(e) 29.65)
+    lon <- tryCatch(as.numeric(asset$lon), error=function(e) -82.33)
+    if (is.na(lat)) lat <- 29.65
+    if (is.na(lon)) lon <- -82.33
+    tmp <- file.path(tempdir(), paste0("bcp_", safe_name, "_", format(Sys.time(),"%H%M%S")))
+    dir.create(tmp, showWarnings=FALSE)
+    withr::with_dir(tmp, rmarkdown::render(
+      input             = tmpl_file,
+      output_file       = out_file,
+      intermediates_dir = tmp,
+      params = list(
+        username             = uname,
+        asset_name           = asset$asset_name          %||% "",
+        address              = asset$address             %||% "",
+        lat                  = lat, lon = lon,
+        zip                  = asset$zip                 %||% "",
+        city                 = asset$city                %||% "",
+        nearest_airport_icao = asset$nearest_airport_icao %||% "KGNV",
+        nearest_airport_name = asset$nearest_airport_name %||% "Gainesville Regional",
+        asset_type           = asset$asset_type          %||% "Facility",
+        notes                = asset$notes               %||% "",
+        mongo_uri            = MONGO_URI, days_back = 30L
+      ), quiet = TRUE
+    ))
+    out_file
+  }
+
+  observeEvent(input$btn_gen_bcp, {
+    if (!isTRUE(auth_rv$role %in% c("operator","admin"))) {
+      bcp_status_msg("Access denied."); return()
+    }
+    uname    <- input$bcp_username
+    asset_id <- input$bcp_asset_id
+    if (is.null(uname) || nchar(uname) == 0 || is.null(asset_id) || nchar(asset_id) == 0) {
+      bcp_status_msg("Select a user and asset first."); return()
+    }
+
+    # ── All Facilities batch mode ────────────────────────────────────────────
+    if (asset_id == "__all__") {
+      bcp_status_msg("Generating BCPs for all facilities\u2026 (this may take several minutes)")
+      col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+      if (is.null(col)) { bcp_status_msg("DB unavailable."); return() }
+      tryCatch({
+        all_users <- col$find("{}", fields='{"username":1,"profession":1,"assets":1,"email":1,"_id":0}')
+        col$disconnect()
+        output_dir <- rpt_output_dir
+        dir.create(output_dir, showWarnings=FALSE, recursive=TRUE)
+        timestamp  <- format(Sys.time(), "%Y%m%d_%H%M")
+        generated  <- character(0)
+        errors     <- character(0)
+
+        for (i in seq_len(nrow(all_users))) {
+          row    <- all_users[i, ]
+          uname_i <- as.character(row$username)
+          prof_i  <- if (!is.null(row$profession) && !is.na(row$profession)) as.character(row$profession) else ""
+          tmpl_i  <- if (nchar(prof_i) > 0) PROFESSION_TEMPLATE_MAP[prof_i] %||% "general" else "general"
+          assets_i <- if (!is.null(row$assets)) row$assets[[1]] else NULL
+          if (is.null(assets_i) || (is.data.frame(assets_i) && nrow(assets_i) == 0)) next
+
+          asset_list <- if (is.data.frame(assets_i)) {
+            lapply(seq_len(nrow(assets_i)), function(j) as.list(assets_i[j, ]))
+          } else as.list(assets_i)
+
+          for (asset in asset_list) {
+            tryCatch({
+              f <- .render_one_bcp(uname_i, asset, tmpl_i, output_dir, timestamp)
+              generated <- c(generated, basename(f))
+              if (isTRUE(input$bcp_email) && !is.null(row$email) && nchar(as.character(row$email)) > 0) {
+                send_fpren_email(as.character(row$email),
+                  paste0("FPREN BCP: ", asset$asset_name %||% "Asset"),
+                  paste0("<h3>Business Continuity Plan</h3><p>BCP for <strong>",
+                         asset$asset_name %||% "Asset", "</strong> is attached.</p>"),
+                  attachment_path = f)
+              }
+            }, error=function(e) {
+              errors <<- c(errors, paste0(uname_i, "/", asset$asset_name %||% "?", ": ", conditionMessage(e)))
+            })
+          }
+        }
+        msg <- paste0("Generated ", length(generated), " BCP(s).")
+        if (length(errors) > 0) msg <- paste0(msg, "\nErrors: ", paste(errors, collapse="; "))
+        bcp_status_msg(msg)
+        showNotification(paste0("Batch BCP complete: ", length(generated), " files"), type="message")
+      }, error=function(e) {
+        tryCatch(col$disconnect(), error=function(e2) NULL)
+        bcp_status_msg(paste0("Batch error: ", conditionMessage(e)))
+      })
+      return()
+    }
+    bcp_status_msg("Generating BCP — this may take 60-120 seconds...")
+
+    # Fetch asset details from MongoDB
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { bcp_status_msg("DB unavailable."); return() }
+    asset <- tryCatch({
+      u <- col$find(sprintf('{"username":"%s"}', uname), fields='{"assets":1,"_id":0}')
+      col$disconnect()
+      assets <- if (nrow(u) > 0 && !is.null(u$assets)) u$assets[[1]] else NULL
+      if (is.null(assets)) NULL else {
+        if (is.data.frame(assets)) {
+          idx <- which(as.character(assets$asset_id) == asset_id)
+          if (length(idx) == 0) NULL else as.list(assets[idx[1], ])
+        } else {
+          found <- Filter(function(a) as.character(a$asset_id) == asset_id, assets)
+          if (length(found) == 0) NULL else found[[1]]
+        }
+      }
+    }, error=function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL); NULL
+    })
+
+    if (is.null(asset)) { bcp_status_msg("Asset not found."); return() }
+
+    output_dir <- rpt_output_dir
+    dir.create(output_dir, showWarnings=FALSE, recursive=TRUE)
+    timestamp  <- format(Sys.time(), "%Y%m%d_%H%M")
+    tmpl_key   <- input$bcp_template %||% "general"
+
+    tryCatch({
+      output_file <- .render_one_bcp(uname, asset, tmpl_key, output_dir, timestamp)
+      msg <- paste0("BCP saved: ", basename(output_file))
+      if (isTRUE(input$bcp_email)) {
+        u_email <- tryCatch({
+          col2 <- mongo(collection="users", db="weather_rss", url=MONGO_URI)
+          ue <- col2$find(sprintf('{"username":"%s"}', uname), fields='{"email":1,"_id":0}')
+          col2$disconnect()
+          if (nrow(ue) > 0 && !is.null(ue$email)) ue$email[1] else ""
+        }, error=function(e) "")
+        if (nchar(u_email) > 0) {
+          send_fpren_email(u_email,
+            paste0("FPREN BCP: ", asset$asset_name %||% "Asset"),
+            paste0("<h3>Business Continuity Plan</h3>",
+                   "<p>Your BCP for <strong>", asset$asset_name %||% "Asset",
+                   "</strong> has been generated and is attached.</p>"),
+            attachment_path = output_file)
+          msg <- paste0(msg, " — emailed to ", u_email)
+        }
+      }
+      bcp_status_msg(msg)
+    }, error=function(e) bcp_status_msg(paste0("ERROR: ", conditionMessage(e))))
+  })
 
   # Upload Content (operator + admin only)
   CONTENT_ROOT <- "/home/ufuser/Fpren-main/weather_station/audio/content"
@@ -4101,15 +5827,24 @@ server <- function(input, output, session) {
   observeEvent(input$btn_save_playlist_config, {
     zone_id <- input$zone_pl_sel
     types   <- input$normal_playlist_types %||% character(0)
+    # playlist_order comes from the JS drag events; fall back to types order
+    order_str <- input$playlist_order %||% ""
+    ordered_types <- if (nchar(order_str) > 0) {
+      order_all <- trimws(unlist(strsplit(order_str, ",")))
+      # Keep only checked types, preserving drag order
+      intersect(order_all, types)
+    } else {
+      types
+    }
     col <- get_col("zone_definitions")
     if (is.null(col)) { pl_save_status("Error: MongoDB unavailable."); return() }
     tryCatch({
-      types_json <- paste0('["', paste(types, collapse='","'), '"]')
+      types_json <- paste0('["', paste(ordered_types, collapse='","'), '"]')
       col$update(sprintf('{"zone_id":"%s"}', zone_id),
                  sprintf('{"$set":{"normal_mode_types":%s}}', types_json))
       col$disconnect()
-      pl_save_status(sprintf("Saved %d types for %s at %s",
-                             length(types), zone_id,
+      pl_save_status(sprintf("Saved %d types for %s (priority order preserved) at %s",
+                             length(ordered_types), zone_id,
                              format(Sys.time(), "%H:%M:%S")))
     }, error=function(e) {
       tryCatch(col$disconnect(), error=function(e2) NULL)
@@ -4162,6 +5897,371 @@ server <- function(input, output, session) {
       data.frame(Error=conditionMessage(e))
     })
   }, options=list(pageLength=15), rownames=FALSE)
+
+  # ── Census & Demographics Tab ─────────────────────────────────────────────
+  CENSUS_API <- "http://localhost:5000/api/census"
+
+  census_all_rv     <- reactiveVal(NULL)
+  census_county_rv  <- reactiveVal(NULL)
+  census_ai_rv      <- reactiveVal("")
+  census_impact_rv      <- reactiveVal(NULL)
+  census_impact_data_rv <- reactiveVal(NULL)   # raw API response for PDF/email
+  census_impact_status_rv <- reactiveVal("")
+  census_refresh_rv <- reactiveVal("")
+
+  # Load all counties on tab visit
+  census_data_loaded <- reactiveVal(FALSE)
+  observe({
+    if (!isTRUE(auth_rv$logged_in)) return()
+    if (census_data_loaded()) return()
+    tryCatch({
+      r   <- httr::GET(paste0(CENSUS_API, "/counties"), httr::timeout(15))
+      dat <- httr::content(r, as = "parsed", type = "application/json")
+      if (isTRUE(dat$ok) && length(dat$counties) > 0) {
+        counties <- dat$counties
+        census_data_loaded(TRUE)
+        census_all_rv(counties)
+        cnames <- sapply(counties, function(x) x$county)
+        updateSelectInput(session, "census_county_sel",
+          choices = setNames(cnames, cnames), selected = "Alachua")
+      }
+    }, error = function(e) NULL)
+  })
+
+  # Load active alerts for impact selector
+  observe({
+    if (!isTRUE(auth_rv$logged_in)) return()
+    col <- tryCatch(mongo(collection="nws_alerts", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) return()
+    tryCatch({
+      alerts <- col$find(
+        '{}',
+        fields = '{"alert_id":1,"event":1,"area_desc":1,"severity":1,"fetched_at":1,"_id":1}',
+        sort   = '{"fetched_at":-1}',
+        limit  = 50
+      )
+      col$disconnect()
+      if (nrow(alerts) > 0) {
+        labels <- paste0(alerts$event, " — ", substr(alerts$area_desc, 1, 45))
+        ids    <- if (!is.null(alerts$alert_id) && any(nchar(as.character(alerts$alert_id)) > 0))
+                    as.character(alerts$alert_id)
+                  else
+                    as.character(alerts$`_id`)
+        updateSelectInput(session, "census_alert_sel",
+          choices = c("-- select alert --" = "", setNames(ids, labels)))
+      } else {
+        updateSelectInput(session, "census_alert_sel",
+          choices = c("No alerts in database" = ""))
+      }
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error=function(e2) NULL)
+    })
+  })
+
+  # Value boxes — statewide totals
+  output$census_vbox_pop <- renderValueBox({
+    counties <- census_all_rv()
+    total <- if (!is.null(counties)) sum(sapply(counties, function(x) x$population_total %||% 0)) else 0
+    valueBox(format(total, big.mark=","), "FL Total Population", icon=icon("users"), color="blue")
+  })
+  output$census_vbox_elderly <- renderValueBox({
+    counties <- census_all_rv()
+    avg_pct <- if (!is.null(counties) && length(counties) > 0)
+      round(mean(sapply(counties, function(x) x$pct_65plus %||% 0)), 1) else 0
+    valueBox(paste0(avg_pct, "%"), "Avg % Age 65+", icon=icon("user-friends"), color="yellow")
+  })
+  output$census_vbox_poverty <- renderValueBox({
+    counties <- census_all_rv()
+    avg_pct <- if (!is.null(counties) && length(counties) > 0)
+      round(mean(sapply(counties, function(x) x$pct_poverty %||% 0)), 1) else 0
+    valueBox(paste0(avg_pct, "%"), "Avg % Below Poverty", icon=icon("dollar-sign"), color="orange")
+  })
+  output$census_vbox_vulnerable <- renderValueBox({
+    counties <- census_all_rv()
+    n_high <- if (!is.null(counties))
+      sum(sapply(counties, function(x) (x$vulnerability_score %||% 0) >= 0.5)) else 0
+    valueBox(n_high, "High-Vulnerability Counties", icon=icon("exclamation-triangle"), color="red")
+  })
+
+  # County detail panel
+  output$census_county_detail <- renderUI({
+    county_name <- input$census_county_sel
+    counties    <- census_all_rv()
+    if (is.null(counties) || is.null(county_name) || nchar(county_name) == 0)
+      return(p("Select a county to view demographics."))
+    cdata <- Filter(function(x) x$county == county_name, counties)
+    if (length(cdata) == 0) return(p("No data for this county."))
+    d <- cdata[[1]]
+    score <- d$vulnerability_score %||% 0
+    sc_col <- if (score >= 0.7) "red" else if (score >= 0.5) "orange" else if (score >= 0.3) "#0077aa" else "green"
+    tagList(
+      fluidRow(
+        column(3, div(style="text-align:center;",
+          div(style="font-size:28px;font-weight:bold;color:#003087;",
+              format(d$population_total %||% 0, big.mark=",")),
+          div(style="font-size:12px;color:#888;", "Total Population")
+        )),
+        column(3, div(style="text-align:center;",
+          div(style=paste0("font-size:28px;font-weight:bold;color:",sc_col,";"),
+              round(score, 3)),
+          div(style="font-size:12px;color:#888;", paste("Vulnerability:", d$vulnerability_label %||% ""))
+        )),
+        column(3, div(style="text-align:center;",
+          div(style="font-size:28px;font-weight:bold;color:#e07020;",
+              paste0(d$pct_65plus %||% 0, "%")),
+          div(style="font-size:12px;color:#888;", "Age 65+")
+        )),
+        column(3, div(style="text-align:center;",
+          div(style="font-size:28px;font-weight:bold;color:#c0392b;",
+              paste0(d$pct_poverty %||% 0, "%")),
+          div(style="font-size:12px;color:#888;", "Below Poverty")
+        ))
+      ),
+      hr(),
+      fluidRow(
+        column(6, tags$table(class="table table-condensed", style="font-size:13px;",
+          tags$tr(tags$td(strong("Limited English")),  tags$td(paste0(d$pct_limited_english %||% 0, "%"))),
+          tags$tr(tags$td(strong("With Disability")),  tags$td(paste0(d$pct_disability %||% 0, "%"))),
+          tags$tr(tags$td(strong("Under 18")),         tags$td(paste0(d$pct_under18 %||% 0, "%")))
+        )),
+        column(6, tags$table(class="table table-condensed", style="font-size:13px;",
+          tags$tr(tags$td(strong("Median Income")),    tags$td(paste0("$", format(d$median_household_income %||% 0, big.mark=",")))),
+          tags$tr(tags$td(strong("Housing Units")),    tags$td(format(d$housing_units %||% 0, big.mark=","))),
+          tags$tr(tags$td(strong("ACS Year")),         tags$td(d$year %||% ""))
+        ))
+      )
+    )
+  })
+
+  # Vulnerability bar chart for top 20 counties
+  output$census_vulnerability_chart <- renderPlot({
+    counties <- census_all_rv()
+    if (is.null(counties) || length(counties) == 0) return(NULL)
+    df <- data.frame(
+      county = sapply(counties, function(x) x$county),
+      score  = sapply(counties, function(x) x$vulnerability_score %||% 0),
+      stringsAsFactors = FALSE
+    )
+    df <- head(df[order(-df$score), ], 20)
+    df$county <- factor(df$county, levels = rev(df$county))
+    df$fill_col <- ifelse(df$score >= 0.7, "#c0392b",
+                   ifelse(df$score >= 0.5, "#e07020",
+                   ifelse(df$score >= 0.3, "#0077aa", "#27ae60")))
+    par(mar = c(3, 7, 1.5, 1))
+    barplot(df$score, names.arg = df$county, horiz = TRUE, las = 1,
+            col = df$fill_col, border = NA, cex.names = 0.75,
+            xlab = "Vulnerability Score (0–1)", main = "Top 20 Most Vulnerable FL Counties",
+            xlim = c(0, 1))
+    abline(v = c(0.3, 0.5, 0.7), lty = 2, col = c("#0077aa","#e07020","#c0392b"), lwd = 1)
+  })
+
+  # AI vulnerability analysis
+  output$census_ai_output <- renderText({ census_ai_rv() })
+
+  observeEvent(input$btn_census_analyze, {
+    county_name <- input$census_county_sel
+    if (is.null(county_name) || nchar(county_name) == 0) {
+      census_ai_rv("Select a county first."); return()
+    }
+    census_ai_rv("Requesting AI analysis from LiteLLM...")
+    tryCatch({
+      r   <- httr::GET(paste0(CENSUS_API, "/analysis/", URLencode(county_name)),
+                       httr::timeout(30))
+      dat <- httr::content(r, as = "parsed", type = "application/json")
+      if (isTRUE(dat$ok)) {
+        census_ai_rv(dat$analysis %||% "No analysis returned.")
+      } else {
+        census_ai_rv(paste0("Error: ", dat$message %||% "Unknown error"))
+      }
+    }, error = function(e) census_ai_rv(paste0("Request failed: ", e$message)))
+  })
+
+  # Population impact for active alert
+  output$census_impact_output <- renderUI({
+    census_impact_rv()
+  })
+
+  output$census_impact_status <- renderText({ census_impact_status_rv() })
+
+  observeEvent(input$btn_census_impact, {
+    alert_id <- input$census_alert_sel
+    if (is.null(alert_id) || nchar(alert_id) == 0) {
+      census_impact_rv(p("Select an active alert first.")); return()
+    }
+    census_impact_data_rv(NULL)
+    census_impact_rv(p(icon("spinner"), " Analyzing population impact..."))
+    tryCatch({
+      r   <- httr::GET(paste0(CENSUS_API, "/impact/", URLencode(alert_id)),
+                       httr::timeout(30))
+      dat <- httr::content(r, as = "parsed", type = "application/json")
+      if (isTRUE(dat$ok)) {
+        census_impact_data_rv(dat$alert)   # store raw data for PDF/email
+        imp       <- dat$alert$census_impact
+        n_at_risk <- format(imp$total_population_at_risk %||% 0, big.mark=",")
+        census_impact_rv(tagList(
+          div(style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:10px 14px;margin-bottom:10px;",
+            strong("Total population in affected counties: "), n_at_risk
+          ),
+          p(strong("AI Analysis:")),
+          pre(style="background:#f9f9f9;padding:10px;border-radius:4px;white-space:pre-wrap;font-size:13px;",
+              imp$ai_analysis %||% "No analysis available.")
+        ))
+      } else {
+        census_impact_rv(p(style="color:red;", "Error: ", dat$message %||% "Unknown"))
+      }
+    }, error = function(e) census_impact_rv(p(style="color:red;", "Request failed: ", e$message)))
+  })
+
+  # ── Census Impact PDF export ─────────────────────────────────────────────
+  observeEvent(input$btn_census_impact_pdf, {
+    dat <- census_impact_data_rv()
+    if (is.null(dat)) {
+      census_impact_status_rv("Run Analyze Impact first.")
+      return()
+    }
+    census_impact_status_rv("Generating PDF\u2026 (30\u201360 s)")
+    tryCatch({
+      imp         <- dat$census_impact
+      output_dir  <- "/home/ufuser/Fpren-main/reports/output"
+      dir.create(output_dir, showWarnings=FALSE, recursive=TRUE)
+      timestamp   <- format(Sys.time(), "%Y%m%d_%H%M")
+      safe_event  <- gsub("[^A-Za-z0-9]", "_", dat$event %||% "alert")
+      output_file <- file.path(output_dir,
+        paste0("census_impact_", safe_event, "_", timestamp, ".pdf"))
+
+      counties_json <- tryCatch(
+        jsonlite::toJSON(imp$county_data %||% list(), auto_unbox=TRUE),
+        error = function(e) "{}"
+      )
+
+      withr::with_dir(tempdir(), rmarkdown::render(
+        input             = "/home/ufuser/Fpren-main/reports/census_impact_report.Rmd",
+        output_file       = output_file,
+        intermediates_dir = tempdir(),
+        params = list(
+          alert_event       = dat$event       %||% "",
+          alert_area        = dat$area_desc   %||% "",
+          alert_severity    = dat$severity    %||% "",
+          alert_headline    = dat$headline    %||% "",
+          alert_description = dat$description %||% "",
+          total_population  = imp$total_population_at_risk %||% 0,
+          counties_json     = as.character(counties_json),
+          ai_analysis       = imp$ai_analysis %||% "",
+          mongo_uri         = MONGO_URI
+        ),
+        quiet = TRUE
+      ))
+      census_impact_status_rv(paste0("Saved: ", basename(output_file)))
+      showNotification(paste0("PDF saved: ", basename(output_file)), type="message")
+    }, error = function(e) {
+      census_impact_status_rv(paste0("PDF error: ", conditionMessage(e)))
+      showNotification(conditionMessage(e), type="error")
+    })
+  })
+
+  # ── Census Impact email ──────────────────────────────────────────────────
+  observeEvent(input$btn_census_impact_email, {
+    dat <- census_impact_data_rv()
+    if (is.null(dat)) {
+      census_impact_status_rv("Run Analyze Impact first, then Export PDF before emailing.")
+      return()
+    }
+    # Find the most recent census impact PDF
+    output_dir  <- "/home/ufuser/Fpren-main/reports/output"
+    safe_event  <- gsub("[^A-Za-z0-9]", "_", dat$event %||% "alert")
+    files <- list.files(output_dir,
+      pattern    = paste0("^census_impact_", safe_event, "_.*\\.pdf$"),
+      full.names = TRUE)
+    if (length(files) == 0) {
+      census_impact_status_rv("No PDF found \u2014 click Export PDF first.")
+      return()
+    }
+    latest_file <- files[which.max(file.mtime(files))]
+    census_impact_status_rv("Sending email\u2026")
+    tryCatch({
+      sc        <- tryCatch(
+        jsonlite::fromJSON("/home/ufuser/Fpren-main/weather_rss/config/smtp_config.json"),
+        error = function(e) list())
+      smtp_host <- sc$smtp_host %||% "smtp.ufl.edu"
+      smtp_port <- as.integer(sc$smtp_port %||% 25)
+      mail_from <- sc$mail_from %||% "lawrence.bornace@ufl.edu"
+      mail_to   <- sc$mail_to   %||% "lawrence.bornace@ufl.edu"
+      imp       <- dat$census_impact
+      subject   <- sprintf("FPREN Alert Impact Report — %s — %s",
+                           dat$event %||% "Alert", format(Sys.Date(), "%Y-%m-%d"))
+      library(emayili)
+      em <- envelope() %>%
+        from(mail_from) %>%
+        to(mail_to) %>%
+        subject(subject) %>%
+        text(paste0(
+          "FPREN Alert Population Impact Report\n\n",
+          "Alert:      ", dat$event %||% "", "\n",
+          "Severity:   ", dat$severity %||% "", "\n",
+          "Area:       ", dat$area_desc %||% "", "\n",
+          "Population: ", format(imp$total_population_at_risk %||% 0, big.mark=","), "\n",
+          "Date:       ", format(Sys.Date(), "%Y-%m-%d"), "\n\n",
+          "AI Analysis:\n", imp$ai_analysis %||% "", "\n\n",
+          "PDF report attached.\n\n",
+          "-- FPREN Automated Reporting System\n",
+          "   Florida Public Radio Emergency Network\n"
+        )) %>%
+        attachment(latest_file)
+      server(host=smtp_host, port=smtp_port, reuse=FALSE)(em, verbose=FALSE)
+      msg <- paste0("Email sent to ", mail_to, " at ", format(Sys.time(), "%H:%M:%S"))
+      census_impact_status_rv(msg)
+      showNotification(msg, type="message")
+    }, error = function(e) {
+      census_impact_status_rv(paste0("Email error: ", conditionMessage(e)))
+      showNotification(conditionMessage(e), type="error")
+    })
+  })
+
+  # All counties data table
+  output$census_all_table <- DT::renderDataTable({
+    counties <- census_all_rv()
+    if (is.null(counties) || length(counties) == 0)
+      return(datatable(data.frame(Message="No census data loaded. Run the fetcher first.")))
+    df <- data.frame(
+      County          = sapply(counties, function(x) x$county),
+      Population      = sapply(counties, function(x) format(x$population_total %||% 0, big.mark=",")),
+      "65+"           = sapply(counties, function(x) paste0(x$pct_65plus %||% 0, "%")),
+      Poverty         = sapply(counties, function(x) paste0(x$pct_poverty %||% 0, "%")),
+      "Lim.English"   = sapply(counties, function(x) paste0(x$pct_limited_english %||% 0, "%")),
+      Disability      = sapply(counties, function(x) paste0(x$pct_disability %||% 0, "%")),
+      Score           = sapply(counties, function(x) round(x$vulnerability_score %||% 0, 3)),
+      Level           = sapply(counties, function(x) x$vulnerability_label %||% ""),
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+    dt <- datatable(df, options=list(pageLength=20, scrollX=TRUE, order=list(list(7,"desc"))),
+                    rownames=FALSE, selection="none")
+    dt %>% DT::formatStyle("Level",
+      backgroundColor = DT::styleEqual(
+        c("Critical","High","Moderate","Low"),
+        c("#fadbd8", "#fdebd0", "#d6eaf8", "#d5f5e3")
+      ))
+  }, server = FALSE)
+
+  # Admin census refresh
+  output$census_refresh_status <- renderText({ census_refresh_rv() })
+
+  observeEvent(input$btn_census_refresh, {
+    if (!isTRUE(auth_rv$role == "admin")) { census_refresh_rv("Admin required."); return() }
+    census_refresh_rv("Fetching from Census API...")
+    tryCatch({
+      r   <- httr::POST(paste0(CENSUS_API, "/refresh"),
+                        httr::add_headers("Content-Type"="application/json"),
+                        httr::timeout(90))
+      dat <- httr::content(r, as="parsed", type="application/json")
+      if (isTRUE(dat$ok)) {
+        census_data_loaded(FALSE)  # force reload
+        census_refresh_rv(dat$message %||% "Refresh complete.")
+      } else {
+        census_refresh_rv(paste0("Error: ", dat$message %||% "Unknown"))
+      }
+    }, error=function(e) census_refresh_rv(paste0("Request failed: ", e$message)))
+  })
 
 }
 

@@ -15,6 +15,8 @@ import sys
 import time
 from datetime import datetime
 
+import requests
+
 CONFIG_FILE   = os.path.join(os.path.dirname(__file__), "..", "stream_notify_config.json")
 STATE_FILE    = "/home/ufuser/Fpren-main/logs/stream_state.txt"
 LOG_FILE      = "/home/ufuser/Fpren-main/logs/stream_monitor.log"
@@ -23,6 +25,20 @@ CHECK_PORT    = 8000
 CHECK_HOST    = "127.0.0.1"
 INTERVAL      = 60  # seconds
 
+# Zone mount points — must have a live source connected for the stream to work.
+# The /fpren mount is the public All-Florida stream; others are zone-specific.
+ICECAST_STATUS_URL = f"http://{CHECK_HOST}:{CHECK_PORT}/status-json.xsl"
+EXPECTED_MOUNTS = [
+    "/fpren",
+    "/north-florida",
+    "/central-florida",
+    "/south-florida",
+    "/tampa",
+    "/miami",
+    "/orlando",
+    "/jacksonville",
+    "/gainesville",
+]
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 logging.basicConfig(
@@ -33,12 +49,51 @@ logging.basicConfig(
 
 
 def check_stream() -> bool:
-    """Return True if something is listening on port 8000."""
+    """
+    Return True only if Icecast is up AND at least the primary /fpren mount
+    has a live source connected.
+
+    Checking just port 8000 tells us Icecast is running, but all 9 zone
+    FFmpeg source processes could be dead while port 8000 stays open.
+    This checks the actual mount source list from the Icecast status API.
+    """
     try:
-        with socket.create_connection((CHECK_HOST, CHECK_PORT), timeout=5):
-            return True
-    except (ConnectionRefusedError, OSError, socket.timeout):
+        resp = requests.get(ICECAST_STATUS_URL, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logging.warning("Icecast status fetch failed: %s", exc)
+        # Fall back to bare TCP check so we still catch total outages.
+        try:
+            with socket.create_connection((CHECK_HOST, CHECK_PORT), timeout=5):
+                return False  # Port open but can't read status — treat as degraded
+        except (ConnectionRefusedError, OSError, socket.timeout):
+            return False
+
+    # Icecast reports active sources under icestats.source (dict or list).
+    icestats = data.get("icestats", {})
+    sources  = icestats.get("source", [])
+    if isinstance(sources, dict):
+        sources = [sources]
+
+    active_mounts = {s.get("listenurl", "").split(":8000", 1)[-1] for s in sources}
+
+    # Require at least the primary All-Florida mount to be live.
+    primary_up = "/fpren" in active_mounts
+    if not primary_up:
+        logging.warning(
+            "Primary /fpren mount has no live source. Active mounts: %s",
+            sorted(active_mounts) or "(none)",
+        )
         return False
+
+    # Log any zone mounts that are down (informational — don't fail the check
+    # on zone mounts alone, since a zone restart is less critical than total outage).
+    dead_zones = [m for m in EXPECTED_MOUNTS if m != "/fpren" and m not in active_mounts]
+    if dead_zones:
+        logging.warning("Zone mounts with no live source: %s", dead_zones)
+
+    return True
 
 
 def read_last_state() -> str:

@@ -1,0 +1,473 @@
+---
+title: "Business Continuity Plan — Broadcast Facility & Staff"
+subtitle: "`r params$asset_name`"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    fig_caption: true
+geometry: margin=1in
+fontsize: 11pt
+params:
+  username: "user"
+  asset_name: "Broadcast Facility"
+  address: "123 Main St, Gainesville, FL 32601"
+  lat: 29.65
+  lon: -82.33
+  zip: "32601"
+  city: "Gainesville"
+  nearest_airport_icao: "KGNV"
+  nearest_airport_name: "Gainesville Regional Airport"
+  asset_type: "Radio Station"
+  notes: ""
+  mongo_uri: "mongodb://localhost:27017/"
+  days_back: 30
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.align = "center", out.width = "90%")
+suppressPackageStartupMessages({
+  library(mongolite); library(dplyr); library(ggplot2)
+  library(knitr); library(kableExtra); library(lubridate)
+})
+FPREN_BLUE <- "#003087"
+start_date <- Sys.time() - days(params$days_back)
+mongo_uri  <- params$mongo_uri
+safe_mongo <- function(collection, db = "weather_rss") {
+  tryCatch(mongo(collection=collection, db=db, url=mongo_uri), error=function(e) NULL)
+}
+```
+
+\definecolor{fprenblue}{HTML}{003087}
+
+\begin{center}
+\textcolor{fprenblue}{\rule{\linewidth}{2pt}}
+\vspace{4pt}
+{\Large\textbf{\textcolor{fprenblue}{FPREN --- Florida Public Radio Emergency Network}}}\\
+{\large\textbf{Broadcast Facility \& Staff Business Continuity Plan}}\\
+\vspace{4pt}
+\textcolor{fprenblue}{\rule{\linewidth}{1pt}}
+\end{center}
+
+\vspace{6pt}
+
+```{r cover-table, results='asis'}
+cover <- data.frame(
+  Field = c("Facility Name","Asset Type","Address","Coordinates",
+            "Nearest City","Nearest Airport","Prepared For",
+            "Report Generated","Days Covered"),
+  Value = c(params$asset_name, params$asset_type, params$address,
+            paste0(params$lat, " N, ", abs(params$lon), " W"),
+            params$city,
+            paste0(params$nearest_airport_icao, " -- ", params$nearest_airport_name),
+            params$username,
+            format(Sys.time(), "%Y-%m-%d %H:%M ET"),
+            paste0(params$days_back, " days")),
+  stringsAsFactors = FALSE
+)
+kable(cover, col.names=NULL, booktabs=TRUE, linesep="") %>%
+  kable_styling(latex_options="hold_position", full_width=FALSE) %>%
+  column_spec(1, bold=TRUE, color=FPREN_BLUE, width="6cm") %>%
+  column_spec(2, width="9cm")
+```
+
+> **Confidential** -- For authorized FPREN broadcast personnel only.
+
+\newpage
+
+# Executive Summary
+
+```{r exec-summary}
+alerts_col    <- safe_mongo("nws_alerts")
+recent_alerts <- tryCatch({
+  if (is.null(alerts_col)) stop()
+  q <- sprintf('{"$or":[{"area_desc":{"$regex":"%s","$options":"i"}},{"counties":{"$regex":"%s","$options":"i"}}]}',
+               params$city, params$city)
+  r <- alerts_col$find(q, fields='{"event":1,"severity":1,"urgency":1,"sent":1,"expires":1,"_id":0}')
+  alerts_col$disconnect(); r
+}, error=function(e) { tryCatch(alerts_col$disconnect(), error=function(e2) NULL); data.frame() })
+
+n_alerts  <- nrow(recent_alerts)
+n_extreme <- if (n_alerts > 0 && "severity" %in% names(recent_alerts))
+               sum(tolower(recent_alerts$severity) %in% c("extreme","severe"), na.rm=TRUE) else 0
+alert_risk <- if (n_extreme >= 3) "HIGH" else if (n_extreme >= 1 || n_alerts >= 5) "MODERATE" else "LOW"
+
+wx_col  <- safe_mongo("weather_history")
+wx_hist <- tryCatch({
+  if (is.null(wx_col)) stop()
+  r <- wx_col$find(
+    sprintf('{"icao":"%s","timestamp":{"$gte":"%s"}}', params$nearest_airport_icao,
+            format(start_date, "%Y-%m-%dT%H:%M:%SZ")),
+    fields='{"temp_f":1,"wind_speed":1,"flight_cat":1,"visibility":1,"_id":0}')
+  wx_col$disconnect(); r
+}, error=function(e) { tryCatch(wx_col$disconnect(), error=function(e2) NULL); data.frame() })
+
+max_wind <- if (nrow(wx_hist) > 0 && "wind_speed" %in% names(wx_hist))
+              max(wx_hist$wind_speed, na.rm=TRUE) else NA_real_
+n_ifr    <- if (nrow(wx_hist) > 0 && "flight_cat" %in% names(wx_hist))
+              sum(wx_hist$flight_cat %in% c("IFR","LIFR"), na.rm=TRUE) else 0
+wx_risk  <- if (!is.na(max_wind) && (max_wind > 40 || n_ifr > 10)) "HIGH" else
+            if (!is.na(max_wind) && (max_wind > 25 || n_ifr > 3))  "MODERATE" else "LOW"
+
+traffic_col <- safe_mongo("fl_traffic")
+traffic_df  <- tryCatch({
+  if (is.null(traffic_col)) stop()
+  r <- traffic_col$find(
+    sprintf('{"county":{"$regex":"%s","$options":"i"}}', params$city),
+    fields='{"type":1,"severity":1,"is_full_closure":1,"road":1,"description":1,"_id":0}')
+  traffic_col$disconnect(); r
+}, error=function(e) { tryCatch(traffic_col$disconnect(), error=function(e2) NULL); data.frame() })
+n_closures   <- if (nrow(traffic_df) > 0 && "is_full_closure" %in% names(traffic_df))
+                  sum(traffic_df$is_full_closure == TRUE, na.rm=TRUE) else 0
+traffic_risk <- if (n_closures >= 2) "HIGH" else
+                if (n_closures >= 1 || nrow(traffic_df) > 5) "MODERATE" else "LOW"
+
+overall_risks <- c(alert_risk, wx_risk, traffic_risk)
+overall_risk  <- if (any(overall_risks == "HIGH")) "HIGH" else
+                 if (any(overall_risks == "MODERATE")) "MODERATE" else "LOW"
+```
+
+This plan covers **`r params$asset_name`** broadcast operations at `r params$address`. It addresses equipment protection, on-air continuity, staff safety, and FCC obligations during weather emergencies. Analysis period: `r params$days_back` days ending `r format(Sys.Date(), "%B %d, %Y")`.
+
+```{r risk-table, results='asis'}
+risk_df <- data.frame(
+  Category = c("Weather / Antenna Risk","NWS Alert Activity",
+               "Road Access / Staff Commute","Overall Risk Level"),
+  Level    = c(wx_risk, alert_risk, traffic_risk, overall_risk),
+  Detail   = c(
+    if (!is.na(max_wind)) paste0("Max wind: ", round(max_wind,1), " mph; IFR/LIFR hours: ", n_ifr)
+    else "No weather history",
+    paste0(n_alerts, " alerts; ", n_extreme, " Extreme/Severe"),
+    paste0(n_closures, " full road closures; ", nrow(traffic_df), " incidents in county"),
+    paste0(params$days_back, "-day combined assessment")
+  ),
+  stringsAsFactors=FALSE
+)
+kable(risk_df, col.names=c("Risk Category","Level","Detail"), booktabs=TRUE, linesep="") %>%
+  kable_styling(latex_options=c("hold_position","striped"), full_width=FALSE) %>%
+  column_spec(2, bold=TRUE,
+    color=ifelse(risk_df$Level=="HIGH","red",ifelse(risk_df$Level=="MODERATE","orange","#2e7d32")))
+```
+
+`r if (nchar(params$notes) > 0) paste0("**Notes:** ", params$notes)`
+
+\newpage
+
+# Broadcast Equipment Continuity
+
+## Primary Systems Checklist
+
+```{r equipment-checklist, results='asis'}
+equip <- data.frame(
+  System = c(
+    "Primary Transmitter","Backup/Auxiliary Transmitter",
+    "Icecast Streaming Server","MongoDB Database Server",
+    "UPS (Uninterruptible Power Supply)","Generator (Diesel/NG)",
+    "Antenna System / Tower","Studio Mixing Console",
+    "Piper TTS Engine","ElevenLabs API Credential",
+    "Internet Circuit (Primary)","Internet Circuit (Backup)",
+    "FPREN Icecast Port 8000","All 9 Zone Mounts Live",
+    "NWS IPAWS Feed Active","FL511 Traffic Feed Active"
+  ),
+  `Verify Before Storm` = rep("[ ]", 16),
+  `After Event Check`   = rep("[ ]", 16),
+  `Notes / Status`      = c(
+    "Check TX power output & SWR",
+    "Confirm automatic failover enabled",
+    "Verify all 9 mounts streaming",
+    "Confirm mongod service running; backup current",
+    "Test load transfer; check battery health",
+    "Fuel level; oil; coolant; test run 30 min",
+    "Inspect for physical damage; guy wires",
+    "Console power; backup console available?",
+    "Voice model path; GPU/CPU allocation",
+    "Key valid; test with one critical alert",
+    "Speed test; ISP contact on file",
+    "Cellular/satellite fallback ready",
+    "curl http://localhost:8000/status-json.xsl",
+    "sudo systemctl list-units | grep stream",
+    "sudo systemctl status beacon-ipaws-fetcher",
+    "sudo systemctl status beacon-extended-fetcher"
+  ),
+  stringsAsFactors=FALSE
+)
+kable(equip, booktabs=TRUE, linesep="",
+      col.names=c("System / Component","Before Storm","After Event","Notes")) %>%
+  kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE) %>%
+  column_spec(1, bold=TRUE, width="4.5cm") %>%
+  column_spec(2, width="2cm") %>%
+  column_spec(3, width="2cm") %>%
+  column_spec(4, width="6cm")
+```
+
+## On-Air Continuity Options
+
+```{r continuity-options, results='asis'}
+cont <- data.frame(
+  Scenario = c(
+    "Primary studio loss","Transmitter failure","Internet outage",
+    "Generator failure","Total facility loss"
+  ),
+  Action = c(
+    "Switch to auxiliary/remote studio; activate pre-recorded emergency playlist",
+    "Switch to backup TX; notify UF IT and tower crew",
+    "Fall back to cellular hotspot; reduce stream bitrate to 64 kbps",
+    "Transfer to UPS; start backup generator; reduce non-essential loads",
+    "Activate remote broadcast from designated alternate site; notify FEMA EAS"
+  ),
+  Owner = c("Engineer on-call","RF Engineer","Admin","Facilities","Station Manager"),
+  stringsAsFactors=FALSE
+)
+kable(cont, booktabs=TRUE, linesep="", col.names=c("Failure Scenario","Continuity Action","Owner")) %>%
+  kable_styling(latex_options=c("hold_position","striped"), full_width=FALSE) %>%
+  column_spec(1, bold=TRUE, width="4cm") %>%
+  column_spec(2, width="9cm") %>%
+  column_spec(3, width="3cm")
+```
+
+\newpage
+
+# Staff Safety & Notification
+
+## Staff Emergency Roles
+
+```{r staff-roles, results='asis'}
+roles <- data.frame(
+  Role = c(
+    "Station Manager","Chief Engineer","On-Air Talent","Production Staff",
+    "IT / Systems Admin","Security / Facilities"
+  ),
+  Responsibility = c(
+    "Activate BCP; communicate with UF administration; FCC EAS coordination",
+    "Assess and restore transmitter, antenna, generator, and Icecast systems",
+    "Maintain continuous broadcast; deliver NWS/IPAWS emergency messages",
+    "Queue emergency playlist; manage pre-recorded content; assist engineer",
+    "Monitor MongoDB, systemd services, network, and remote access",
+    "Secure building; manage access; coordinate with campus police"
+  ),
+  `Shelter in Place` = c("Yes","Yes","Yes","Optional","Optional","Yes"),
+  `Evacuate if Ordered` = rep("Yes", 6),
+  stringsAsFactors=FALSE
+)
+kable(roles, booktabs=TRUE, linesep="",
+      col.names=c("Role","Primary Responsibility","Shelter in Place","Evacuate if Ordered")) %>%
+  kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE) %>%
+  column_spec(1, bold=TRUE, width="3.5cm") %>%
+  column_spec(2, width="8cm")
+```
+
+## Staff Accountability Checklist
+
+Before evacuation or shelter-in-place:
+
+1. **Broadcast Engineer** confirms all systems on backup power and streaming normally.
+2. **Station Manager** activates automated emergency playlist if staff must evacuate.
+3. **IT Admin** enables remote monitoring and VPN access for off-site management.
+4. All staff check in via designated text/radio channel within **30 minutes** of activation.
+5. Head count confirmed — no staff left in hazard zone without clearance.
+
+\newpage
+
+# Weather Risk Assessment
+
+Historical data from **`r params$nearest_airport_icao`** (`r params$nearest_airport_name`), last `r params$days_back` days.
+
+```{r weather-analysis, results='asis', fig.height=3.2}
+if (nrow(wx_hist) == 0) {
+  cat("> **No weather history available** for this station.\n")
+} else {
+  avg_temp  <- round(mean(wx_hist$temp_f, na.rm=TRUE), 1)
+  avg_wind  <- if ("wind_speed" %in% names(wx_hist))
+                 round(mean(wx_hist$wind_speed, na.rm=TRUE), 1) else NA
+  max_wind2 <- if ("wind_speed" %in% names(wx_hist))
+                 round(max(wx_hist$wind_speed, na.rm=TRUE), 1) else NA
+  n_vfr  <- if ("flight_cat" %in% names(wx_hist)) sum(wx_hist$flight_cat=="VFR",  na.rm=TRUE) else 0
+  n_mvfr <- if ("flight_cat" %in% names(wx_hist)) sum(wx_hist$flight_cat=="MVFR", na.rm=TRUE) else 0
+  n_ifr2 <- if ("flight_cat" %in% names(wx_hist)) sum(wx_hist$flight_cat=="IFR",  na.rm=TRUE) else 0
+  n_lifr <- if ("flight_cat" %in% names(wx_hist)) sum(wx_hist$flight_cat=="LIFR", na.rm=TRUE) else 0
+
+  wx_stats <- data.frame(
+    Metric = c("Average Temperature","Max Wind Speed","Avg Wind Speed",
+               "VFR Hours","MVFR Hours","IFR Hours","LIFR Hours",
+               "Antenna Wind Load Risk"),
+    Value  = c(paste0(avg_temp," F"),
+               if (!is.na(max_wind2)) paste0(max_wind2," mph") else "N/A",
+               if (!is.na(avg_wind)) paste0(avg_wind," mph") else "N/A",
+               n_vfr, n_mvfr, n_ifr2, n_lifr,
+               if (!is.na(max_wind2) && max_wind2 > 50) "HIGH -- inspect guy wires"
+               else if (!is.na(max_wind2) && max_wind2 > 35) "MODERATE -- monitor tower"
+               else "LOW"),
+    stringsAsFactors=FALSE
+  )
+  print(
+    kable(wx_stats, col.names=c("Metric","Value"), booktabs=TRUE, linesep="") %>%
+      kable_styling(latex_options=c("hold_position","striped"), full_width=FALSE) %>%
+      column_spec(1, width="7cm") %>% column_spec(2, width="5cm")
+  )
+
+  if ("flight_cat" %in% names(wx_hist) && nrow(wx_hist) > 0) {
+    cat_counts <- wx_hist %>% filter(!is.na(flight_cat)) %>%
+      group_by(flight_cat) %>% summarise(n=n(), .groups="drop") %>%
+      mutate(flight_cat=factor(flight_cat, levels=c("VFR","MVFR","IFR","LIFR")))
+    cat_colors <- c(VFR="#0077aa", MVFR="#f0c030", IFR="#e07020", LIFR="#cc2222")
+    print(
+      ggplot(cat_counts, aes(x=flight_cat, y=n, fill=flight_cat)) +
+        geom_col(width=0.6) + scale_fill_manual(values=cat_colors, guide="none") +
+        labs(title=paste0("Flight Category Distribution -- ", params$nearest_airport_icao),
+             x="Category", y="Hours") +
+        theme_minimal(base_size=11) +
+        theme(plot.title=element_text(color=FPREN_BLUE, face="bold"))
+    )
+  }
+}
+```
+
+\newpage
+
+# Recent NWS Alert History
+
+```{r alerts-section, results='asis'}
+if (nrow(recent_alerts) == 0) {
+  cat("> **No NWS alerts** recorded for", params$city, "area during the selected period.\n")
+} else {
+  disp <- recent_alerts %>% select(any_of(c("event","severity","urgency","sent"))) %>% head(25)
+  if ("sent" %in% names(disp))
+    disp$sent <- tryCatch(format(as.POSIXct(disp$sent, tz="UTC"), "%Y-%m-%d %H:%M"), error=function(e) disp$sent)
+  kable(disp, booktabs=TRUE, linesep="") %>%
+    kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE)
+}
+```
+
+\newpage
+
+# Current Road Conditions — Staff Access
+
+```{r traffic-section, results='asis'}
+if (nrow(traffic_df) == 0) {
+  cat("> **No traffic incidents** currently recorded for", params$city, "county.\n")
+} else {
+  disp_t <- traffic_df %>%
+    select(any_of(c("road","type","severity","is_full_closure","description"))) %>% head(20)
+  if ("is_full_closure" %in% names(disp_t))
+    disp_t$is_full_closure <- ifelse(disp_t$is_full_closure==TRUE, "YES", "no")
+  if ("description" %in% names(disp_t))
+    disp_t$description <- substr(disp_t$description, 1, 60)
+  kable(disp_t, booktabs=TRUE, linesep="") %>%
+    kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE)
+}
+```
+
+**Impact on staff access:** `r if (n_closures >= 2) "CRITICAL — multiple roads closed. Staff must identify alternate routes before reporting." else if (n_closures == 1) "CAUTION — one road closure. Confirm alternate access before travel." else "No full closures detected. Normal staff commute expected."`
+
+\newpage
+
+# FCC Emergency Obligations
+
+Broadcast stations have regulatory obligations during declared emergencies:
+
+```{r fcc-table, results='asis'}
+fcc_df <- data.frame(
+  Obligation = c(
+    "Emergency Alert System (EAS)","IPAWS/FEMA Integration",
+    "Transmitter Operation","Staffing During Declared Emergency",
+    "Damage Reporting","Public File Maintenance"
+  ),
+  Requirement = c(
+    "Must relay Presidential and Required Weekly Test alerts. Monitor CAP/IPAWS feed continuously.",
+    "FPREN beacon-ipaws-fetcher must remain operational; monitor for FL-specific CAP messages.",
+    "Maintain authorized power; document any reduction due to emergency conditions.",
+    "No minimum staffing requirement, but must maintain EAS capability from any location.",
+    "Notify FCC within 24 hours if transmitter is silent >10 minutes due to emergency.",
+    "Log all emergency alerts aired; retain for 2 years."
+  ),
+  `Action Item` = rep("[ ]", 6),
+  stringsAsFactors=FALSE
+)
+kable(fcc_df, booktabs=TRUE, linesep="", col.names=c("FCC Obligation","Requirement","Done")) %>%
+  kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE) %>%
+  column_spec(1, bold=TRUE, width="4cm") %>%
+  column_spec(2, width="8.5cm") %>%
+  column_spec(3, width="1cm")
+```
+
+\newpage
+
+# Recovery Timeline
+
+```{r recovery-timeline, results='asis'}
+timeline <- data.frame(
+  Phase  = c(rep("Immediate (0-4 h)", 4), rep("Short-term (4-24 h)", 4),
+             rep("Medium-term (1-7 d)", 3), rep("Long-term (7-30 d)", 2)),
+  Action = c(
+    "Activate staff notification tree; confirm head count",
+    "Engineer assesses transmitter, antenna, generator status",
+    "Enable automated emergency playlist if studio is unmanned",
+    "Verify FPREN Icecast all 9 zone mounts streaming on port 8000",
+    "Restore primary studio or activate alternate broadcast site",
+    "Restore MongoDB from backup; restart all beacon-* services",
+    "Confirm beacon-ipaws-fetcher delivering FL IPAWS alerts",
+    "File FCC notification if transmitter was silent >10 min",
+    "Replace or repair damaged equipment via UF procurement",
+    "Full system test -- TTS generation across all 9 zones",
+    "Resume normal programming; document incident",
+    "Debrief staff; update this BCP with lessons learned",
+    "Submit incident report to UF IT and FCC if required"
+  ),
+  Owner  = c("Manager","Engineer","Admin","Admin",
+             "Engineer","IT Admin","IT Admin","Manager",
+             "UF IT","Engineer","Manager","All","Manager"),
+  Done   = rep("[ ]", 13),
+  stringsAsFactors=FALSE
+)
+kable(timeline, booktabs=TRUE, linesep="", col.names=c("Phase","Action","Owner","Done")) %>%
+  kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE) %>%
+  column_spec(1, width="3.2cm", bold=TRUE, color=FPREN_BLUE) %>%
+  column_spec(2, width="8cm") %>%
+  column_spec(3, width="2.2cm") %>%
+  column_spec(4, width="0.8cm")
+```
+
+\newpage
+
+# Emergency Contacts
+
+```{r contacts, results='asis'}
+contacts <- data.frame(
+  Role = c(
+    "FPREN Administrator","UF IT Help Desk","UF Emergency Management",
+    "FCC Operations Center","NWS Jacksonville (FL alerts)",
+    "National Hurricane Center","UF Facilities Services",
+    paste0(params$city, " County Emergency Mgmt"),
+    "FL Division of Emergency Mgmt"
+  ),
+  Contact = c(
+    "Lawrence Bornace -- lawrence.bornace@ufl.edu",
+    "(352) 392-4357 -- helpdesk@ufl.edu",
+    "(352) 392-1111 -- ufl.edu/emergency",
+    "1-888-225-5322 (24/7 EAS emergency line)",
+    "(904) 741-4311 -- weather.gov/jax",
+    "(305) 229-4470 -- nhc.noaa.gov",
+    "(352) 392-7793 -- facilities.ufl.edu",
+    "(352) 264-6500",
+    "(850) 413-9969 -- floridadisaster.org"
+  ),
+  stringsAsFactors=FALSE
+)
+kable(contacts, col.names=c("Role / Organization","Contact"), booktabs=TRUE, linesep="") %>%
+  kable_styling(latex_options=c("hold_position","striped"), full_width=FALSE) %>%
+  column_spec(1, bold=TRUE, color=FPREN_BLUE, width="6cm") %>%
+  column_spec(2, width="9cm")
+```
+
+\vspace{16pt}
+\begin{center}
+\textcolor{fprenblue}{\rule{\linewidth}{1pt}}\\
+\vspace{4pt}
+{\small\textit{Generated by FPREN Automated Reporting -- `r format(Sys.time(), "%Y-%m-%d %H:%M ET")`}}\\
+{\small\textit{Facility: `r params$asset_name` | User: `r params$username`}}\\
+{\small Florida Public Radio Emergency Network --- University of Florida}
+\end{center}

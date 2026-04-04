@@ -283,6 +283,13 @@ HTML_TEMPLATE = """
   .tab-nav button.active { color:#00cfff; border-bottom:3px solid #00cfff; }
   .tab-panel { display:none; padding:20px; }
   .tab-panel.active { display:block; }
+  .quick-q { font-size:11px;padding:3px 8px;border:1px solid #ccc;border-radius:12px;background:#f5f5f5;cursor:pointer;color:#333; }
+  .quick-q:hover { background:#003087;color:#fff;border-color:#003087; }
+  .chat-msg { animation:fadeIn .2s ease; }
+  .user-msg { background:#003087;color:#fff;border-radius:6px;padding:10px 12px;font-size:13px;max-width:80%;align-self:flex-end; }
+  .agent-msg { background:#e8f0fb;color:#222;border-radius:6px;padding:10px 12px;font-size:13px;max-width:88%;align-self:flex-start; }
+  .agent-thinking { background:#f0f0f0;color:#888;font-style:italic;border-radius:6px;padding:8px 12px;font-size:12px;align-self:flex-start; }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
 
   /* ---- Config tab styles ---- */
   .cfg-card {
@@ -498,6 +505,7 @@ HTML_TEMPLATE = """
   <button onclick="showTab('reports',this)">&#128196; Reports</button>
   <button onclick="showTab('zones',this)">&#128205; Zones</button>
   <button onclick="showTab('upload',this)">&#8679; Upload</button>
+  <button onclick="showTab('agent',this)">&#x1F916; AI Agent</button>
   <button onclick="showTab('config',this)">&#9881; Config</button>
 </nav>
 
@@ -700,6 +708,62 @@ HTML_TEMPLATE = """
   </div>
 </div><!-- end tab-airports -->
 
+<div id="tab-agent" class="tab-panel">
+  <div style="max-width:860px;margin:0 auto;padding:8px 0;">
+
+    <!-- Situation Report card -->
+    <div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:16px;margin-bottom:18px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+        <span style="font-size:18px;">&#x1F4CB;</span>
+        <strong style="font-size:15px;">Live Situation Report</strong>
+        <button onclick="loadSituationReport()" style="margin-left:auto;padding:4px 12px;border:1px solid #003087;border-radius:4px;background:#003087;color:#fff;cursor:pointer;font-size:12px;">&#x21BA; Refresh</button>
+        {% if current_user.role == 'admin' %}
+        <button onclick="generateSituationReport()" id="btn-gen-sit" style="padding:4px 12px;border:1px solid #e07020;border-radius:4px;background:#e07020;color:#fff;cursor:pointer;font-size:12px;">&#x2728; Generate New</button>
+        {% endif %}
+      </div>
+      <div id="sit-report-text" style="font-size:13px;line-height:1.65;color:#333;min-height:60px;">
+        <span style="color:#aaa;">Loading&hellip;</span>
+      </div>
+      <div id="sit-report-meta" style="font-size:11px;color:#999;margin-top:8px;"></div>
+    </div>
+
+    <!-- Chat interface -->
+    <div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+        <span style="font-size:18px;">&#x1F916;</span>
+        <strong style="font-size:15px;">FPREN AI Operator Assistant</strong>
+        <span style="font-size:11px;color:#888;margin-left:auto;">Powered by UF LiteLLM &bull; reads live MongoDB data</span>
+      </div>
+
+      <div id="agent-chat-history" style="height:340px;overflow-y:auto;border:1px solid #eee;border-radius:4px;padding:12px;background:#fafafa;margin-bottom:10px;display:flex;flex-direction:column;gap:10px;">
+        <div class="chat-msg agent-msg" style="background:#e8f0fb;border-radius:6px;padding:10px 12px;font-size:13px;max-width:85%;align-self:flex-start;">
+          Hello! I&#39;m the FPREN AI assistant. I have access to live alerts, weather observations, FL511 traffic, Waze incidents, Census data, evacuation zones, and stream status. Ask me anything about current conditions in Florida.
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;">
+        <input id="agent-input" type="text" placeholder="e.g. What&#39;s the worst traffic in Tampa right now?"
+          style="flex:1;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:13px;"
+          onkeydown="if(event.key==='Enter') sendAgentMessage()">
+        <button onclick="sendAgentMessage()" id="btn-agent-send"
+          style="padding:8px 18px;background:#003087;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;white-space:nowrap;">
+          Send &#x27A4;
+        </button>
+      </div>
+      <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">
+        <span style="font-size:11px;color:#888;">Quick questions:</span>
+        <button onclick="quickAsk('What active NWS alerts are there in Florida right now?')" class="quick-q">Active alerts</button>
+        <button onclick="quickAsk('Summarise current traffic conditions across Florida')" class="quick-q">Traffic summary</button>
+        <button onclick="quickAsk('What is the current weather at KGNV, KTPA, and KMIA?')" class="quick-q">Weather obs</button>
+        <button onclick="quickAsk('Which Florida county has the highest vulnerability score?')" class="quick-q">Vulnerability</button>
+        <button onclick="quickAsk('Are all 9 FPREN Icecast zone streams currently live?')" class="quick-q">Stream status</button>
+        <button onclick="quickAsk('What are the hurricane evacuation zones for Alachua county?')" class="quick-q">Evac zones</button>
+      </div>
+    </div>
+
+  </div>
+</div><!-- end tab-agent -->
+
 <div id="toast"></div>
 
 <script>
@@ -750,6 +814,7 @@ function showTab(name, btn) {
   if (name === 'config')   { loadConfig(); loadStreamControl(); loadSmtp(); loadUsers(); }
   if (name === 'zones')    loadZones();
   if (name === 'upload')   { initUpload(); loadUploadList(); }
+  if (name === 'agent')    loadSituationReport();
 }
 
 function toast(msg, ok=true) {
@@ -1672,6 +1737,109 @@ function generateReport() {
 function toggleCustomDates() {
   const show = document.getElementById('rpt-days').value === '0';
   document.getElementById('rpt-custom-dates').style.display = show ? 'flex' : 'none';
+}
+
+// ── AI Agent tab ──────────────────────────────────────────────────────────────
+function loadSituationReport() {
+  fetch('/api/agent/situation')
+    .then(r => r.json())
+    .then(d => {
+      const el = document.getElementById('sit-report-text');
+      const meta = document.getElementById('sit-report-meta');
+      if (d.ok && d.text) {
+        el.textContent = d.text;
+        meta.textContent = d.generated_at ? 'Generated: ' + d.generated_at : '';
+      } else {
+        el.innerHTML = '<span style="color:#aaa;">No situation report yet. Click "Generate New" to create one.</span>';
+        meta.textContent = '';
+      }
+    })
+    .catch(() => {
+      document.getElementById('sit-report-text').innerHTML =
+        '<span style="color:#c00;">Could not load situation report.</span>';
+    });
+}
+
+function generateSituationReport() {
+  const btn = document.getElementById('btn-gen-sit');
+  btn.disabled = true;
+  btn.textContent = '⏳ Generating…';
+  document.getElementById('sit-report-text').innerHTML =
+    '<span style="color:#aaa;">Running AI agent — this takes 15–30 seconds…</span>';
+  fetch('/api/agent/situation/generate', {method: 'POST'})
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      btn.textContent = '✨ Generate New';
+      if (d.ok) {
+        document.getElementById('sit-report-text').textContent = d.text;
+        document.getElementById('sit-report-meta').textContent =
+          'Generated just now · ' + d.iterations + ' tool call round(s)';
+      } else {
+        document.getElementById('sit-report-text').innerHTML =
+          '<span style="color:#c00;">Error: ' + (d.error || 'unknown') + '</span>';
+      }
+    })
+    .catch(e => {
+      btn.disabled = false;
+      btn.textContent = '✨ Generate New';
+      document.getElementById('sit-report-text').innerHTML =
+        '<span style="color:#c00;">Request failed: ' + e + '</span>';
+    });
+}
+
+function sendAgentMessage() {
+  const input = document.getElementById('agent-input');
+  const msg   = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  appendChatMsg(msg, 'user');
+  const thinking = appendChatMsg('Thinking… (calling live data tools)', 'thinking');
+  document.getElementById('btn-agent-send').disabled = true;
+
+  fetch('/api/agent/chat', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({message: msg})
+  })
+    .then(r => r.json())
+    .then(d => {
+      thinking.remove();
+      document.getElementById('btn-agent-send').disabled = false;
+      if (d.ok) {
+        const bubble = appendChatMsg(d.response, 'agent');
+        if (d.tool_calls && d.tool_calls.length) {
+          const tools = d.tool_calls.map(t => t.tool).join(', ');
+          const note = document.createElement('div');
+          note.style.cssText = 'font-size:10px;color:#999;margin-top:4px;';
+          note.textContent = '🔧 Tools used: ' + tools;
+          bubble.appendChild(note);
+        }
+      } else {
+        appendChatMsg('Error: ' + (d.error || 'unknown error'), 'agent');
+      }
+    })
+    .catch(e => {
+      thinking.remove();
+      document.getElementById('btn-agent-send').disabled = false;
+      appendChatMsg('Request failed: ' + e, 'agent');
+    });
+}
+
+function quickAsk(msg) {
+  document.getElementById('agent-input').value = msg;
+  sendAgentMessage();
+}
+
+function appendChatMsg(text, type) {
+  const history = document.getElementById('agent-chat-history');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + (type === 'user' ? 'user-msg' :
+                                  type === 'thinking' ? 'agent-thinking' : 'agent-msg');
+  div.textContent = text;
+  history.appendChild(div);
+  history.scrollTop = history.scrollHeight;
+  return div;
 }
 </script>
 
@@ -3068,6 +3236,1073 @@ def api_users_password():
     if result.modified_count:
         return jsonify({"ok": True, "message": f"Password updated for {username}"})
     return jsonify({"ok": False, "message": "User not found"}), 404
+
+
+# -------------------- USER ASSETS API --------------------
+# Assets are stored as an array inside each user's MongoDB document.
+# Each asset: { asset_id, asset_name, address, lat, lon, zip, city,
+#               nearest_airport_icao, nearest_airport_name, asset_type, notes, created_at }
+
+def _get_user_assets(username):
+    """Return (user_doc, assets_list) or (None, []) on error."""
+    from pymongo import MongoClient
+    client = MongoClient("mongodb://localhost:27017/")
+    user = client["weather_rss"]["users"].find_one({"username": username}, {"assets": 1})
+    client.close()
+    if not user:
+        return None, []
+    return user, user.get("assets", []) or []
+
+
+@app.route("/api/users/<username>/assets", methods=["GET"])
+@login_required
+def api_user_assets_list(username):
+    """Return a user's assets. Admin or the user themselves."""
+    if current_user.role != "admin" and current_user.username != username:
+        return jsonify({"ok": False, "message": "Forbidden"}), 403
+    user, assets = _get_user_assets(username)
+    if user is None:
+        return jsonify({"ok": False, "message": "User not found"}), 404
+    # Sanitize: stringify any ObjectId-like fields
+    for a in assets:
+        if "asset_id" in a:
+            a["asset_id"] = str(a["asset_id"])
+    return jsonify({"ok": True, "assets": assets})
+
+
+@app.route("/api/users/<username>/assets", methods=["POST"])
+@login_required
+def api_user_assets_add(username):
+    """Add an asset to a user's profile."""
+    if current_user.role != "admin" and current_user.username != username:
+        return jsonify({"ok": False, "message": "Forbidden"}), 403
+    data = request.get_json(silent=True) or {}
+    import uuid
+    from datetime import datetime, timezone
+    from pymongo import MongoClient
+
+    asset_name = data.get("asset_name", "").strip()
+    if not asset_name:
+        return jsonify({"ok": False, "message": "asset_name is required"}), 400
+
+    lat = float(data.get("lat", 0))
+    lon = float(data.get("lon", 0))
+
+    # Auto-fetch nearby emergency resources if coordinates are available
+    nearby = {}
+    if lat != 0 and lon != 0:
+        try:
+            nearby = _fetch_nearby_resources(lat, lon, radius_m=5000)
+        except Exception:
+            nearby = {}
+
+    new_asset = {
+        "asset_id":            str(uuid.uuid4()),
+        "asset_name":          asset_name,
+        "address":             data.get("address", "").strip(),
+        "lat":                 lat,
+        "lon":                 lon,
+        "zip":                 data.get("zip", "").strip(),
+        "city":                data.get("city", "").strip(),
+        "nearest_airport_icao": data.get("nearest_airport_icao", "").strip(),
+        "nearest_airport_name": data.get("nearest_airport_name", "").strip(),
+        "asset_type":          data.get("asset_type", "Facility").strip(),
+        "notes":               data.get("notes", "").strip(),
+        "created_at":          datetime.now(timezone.utc).isoformat(),
+        "nearby_fire_stations":  nearby.get("fire_stations", []),
+        "nearby_hospitals":      nearby.get("hospitals", []),
+        "nearby_supermarkets":   nearby.get("supermarkets", []),
+    }
+    client = MongoClient("mongodb://localhost:27017/")
+    result = client["weather_rss"]["users"].update_one(
+        {"username": username},
+        {"$push": {"assets": new_asset}}
+    )
+    client.close()
+    if result.matched_count == 0:
+        return jsonify({"ok": False, "message": "User not found"}), 404
+    n_fire = len(new_asset["nearby_fire_stations"])
+    n_hosp = len(new_asset["nearby_hospitals"])
+    n_mkt  = len(new_asset["nearby_supermarkets"])
+    return jsonify({
+        "ok":      True,
+        "message": f"Asset added ({n_fire} fire stations, {n_hosp} hospitals, {n_mkt} supermarkets found nearby)",
+        "asset_id": new_asset["asset_id"],
+        "nearby_resources": {
+            "fire_stations": new_asset["nearby_fire_stations"],
+            "hospitals":     new_asset["nearby_hospitals"],
+            "supermarkets":  new_asset["nearby_supermarkets"],
+        },
+    })
+
+
+@app.route("/api/users/<username>/assets/<asset_id>", methods=["PUT"])
+@login_required
+def api_user_assets_update(username, asset_id):
+    """Update a specific asset (matched by asset_id)."""
+    if current_user.role != "admin" and current_user.username != username:
+        return jsonify({"ok": False, "message": "Forbidden"}), 403
+    data = request.get_json(silent=True) or {}
+    from pymongo import MongoClient
+
+    allowed = ["asset_name","address","lat","lon","zip","city",
+               "nearest_airport_icao","nearest_airport_name","asset_type","notes"]
+    set_fields = {}
+    for field in allowed:
+        if field in data:
+            val = data[field]
+            if field in ("lat","lon"):
+                val = float(val)
+            set_fields[f"assets.$.{field}"] = val
+
+    if not set_fields:
+        return jsonify({"ok": False, "message": "Nothing to update"}), 400
+
+    client = MongoClient("mongodb://localhost:27017/")
+    result = client["weather_rss"]["users"].update_one(
+        {"username": username, "assets.asset_id": asset_id},
+        {"$set": set_fields}
+    )
+    client.close()
+    if result.matched_count == 0:
+        return jsonify({"ok": False, "message": "Asset not found"}), 404
+    return jsonify({"ok": True, "message": "Asset updated"})
+
+
+@app.route("/api/users/<username>/assets/<asset_id>", methods=["DELETE"])
+@login_required
+def api_user_assets_delete(username, asset_id):
+    """Remove an asset from a user's profile."""
+    if current_user.role != "admin" and current_user.username != username:
+        return jsonify({"ok": False, "message": "Forbidden"}), 403
+    from pymongo import MongoClient
+    client = MongoClient("mongodb://localhost:27017/")
+    result = client["weather_rss"]["users"].update_one(
+        {"username": username},
+        {"$pull": {"assets": {"asset_id": asset_id}}}
+    )
+    client.close()
+    if result.matched_count == 0:
+        return jsonify({"ok": False, "message": "User not found"}), 404
+    return jsonify({"ok": True, "message": "Asset removed"})
+
+
+# -------------------- CITY / AIRPORT LOOKUP BY ZIP --------------------
+
+# FL airport reference: ICAO, name, city, lat, lon
+_FL_AIRPORTS = [
+    {"icao": "KJAX", "name": "Jacksonville Intl",           "city": "Jacksonville",    "lat": 30.49, "lon": -81.69},
+    {"icao": "KTLH", "name": "Tallahassee Intl",            "city": "Tallahassee",     "lat": 30.40, "lon": -84.35},
+    {"icao": "KGNV", "name": "Gainesville Regional",        "city": "Gainesville",     "lat": 29.69, "lon": -82.27},
+    {"icao": "KOCF", "name": "Ocala Intl",                  "city": "Ocala",           "lat": 29.17, "lon": -82.22},
+    {"icao": "KMCO", "name": "Orlando Intl",                 "city": "Orlando",        "lat": 28.43, "lon": -81.31},
+    {"icao": "KDAB", "name": "Daytona Beach Intl",          "city": "Daytona Beach",   "lat": 29.18, "lon": -81.06},
+    {"icao": "KTPA", "name": "Tampa Intl",                  "city": "Tampa",           "lat": 27.98, "lon": -82.53},
+    {"icao": "KSPG", "name": "St. Pete-Clearwater Intl",   "city": "St. Petersburg",  "lat": 27.92, "lon": -82.69},
+    {"icao": "KSRQ", "name": "Sarasota-Bradenton Intl",    "city": "Sarasota",        "lat": 27.40, "lon": -82.55},
+    {"icao": "KRSW", "name": "Southwest FL Intl",           "city": "Fort Myers",      "lat": 26.54, "lon": -81.76},
+    {"icao": "KMIA", "name": "Miami Intl",                  "city": "Miami",           "lat": 25.80, "lon": -80.29},
+    {"icao": "KFLL", "name": "Fort Lauderdale-Hollywood Intl","city":"Fort Lauderdale","lat": 26.07, "lon": -80.15},
+    {"icao": "KPBI", "name": "Palm Beach Intl",             "city": "West Palm Beach", "lat": 26.68, "lon": -80.10},
+    {"icao": "KEYW", "name": "Key West Intl",               "city": "Key West",        "lat": 24.56, "lon": -81.76},
+    {"icao": "KPNS", "name": "Pensacola Intl",              "city": "Pensacola",       "lat": 30.47, "lon": -87.19},
+    {"icao": "KECP", "name": "Northwest FL Beaches Intl",  "city": "Panama City",     "lat": 30.36, "lon": -85.80},
+]
+
+# Simple FL county centroids for ZIP range resolution
+_FL_COUNTY_CENTROIDS = {
+    "Alachua": (29.67, -82.33), "Baker": (30.33, -82.29), "Bay": (30.21, -85.68),
+    "Bradford": (29.94, -82.17), "Brevard": (28.23, -80.73), "Broward": (26.15, -80.45),
+    "Charlotte": (26.97, -81.95), "Citrus": (28.84, -82.50), "Clay": (29.98, -81.80),
+    "Collier": (26.11, -81.41), "Columbia": (30.22, -82.63), "Miami-Dade": (25.55, -80.63),
+    "Duval": (30.33, -81.65), "Escambia": (30.55, -87.34), "Flagler": (29.47, -81.27),
+    "Hernando": (28.55, -82.47), "Highlands": (27.35, -81.34), "Hillsborough": (27.90, -82.35),
+    "Indian River": (27.74, -80.61), "Jackson": (30.83, -85.22), "Lake": (28.76, -81.72),
+    "Lee": (26.56, -81.77), "Leon": (30.46, -84.28), "Manatee": (27.48, -82.34),
+    "Marion": (29.23, -82.13), "Martin": (27.07, -80.42), "Monroe": (24.93, -81.08),
+    "Nassau": (30.61, -81.77), "Okaloosa": (30.65, -86.52), "Okeechobee": (27.39, -80.90),
+    "Orange": (28.48, -81.31), "Osceola": (28.06, -81.15), "Palm Beach": (26.65, -80.28),
+    "Pasco": (28.31, -82.43), "Pinellas": (27.88, -82.72), "Polk": (27.93, -81.68),
+    "Putnam": (29.63, -81.74), "Saint Johns": (29.90, -81.44), "Saint Lucie": (27.38, -80.44),
+    "Santa Rosa": (30.72, -87.01), "Sarasota": (27.18, -82.37), "Seminole": (28.72, -81.21),
+    "Sumter": (28.70, -82.07), "Suwannee": (30.19, -83.00), "Taylor": (30.06, -83.60),
+    "Volusia": (29.03, -81.07), "Walton": (30.64, -86.13), "Washington": (30.61, -85.67),
+}
+
+# Coarse FL ZIP-to-county range map (county, zip_min, zip_max)
+_FL_ZIP_RANGES = [
+    ("Escambia",30999,32600),("Santa Rosa",32507,32583),("Okaloosa",32531,32579),
+    ("Walton",32413,32462),("Washington",32427,32446),("Bay",32401,32413),
+    ("Jackson",32420,32445),("Calhoun",32421,32424),("Gulf",32456,32465),
+    ("Franklin",32320,32329),("Gadsden",32303,32333),("Liberty",32314,32321),
+    ("Leon",32301,32317),("Wakulla",32327,32327),("Jefferson",32336,32344),
+    ("Madison",32059,32061),("Taylor",32347,32360),("Hamilton",32052,32052),
+    ("Suwannee",32008,32060),("Lafayette",32066,32066),("Columbia",32024,32026),
+    ("Dixie",32628,32628),("Gilchrist",32619,32693),("Alachua",32601,32699),
+    ("Levy",32621,32621),("Putnam",32112,32187),("Marion",32112,34488),
+    ("Citrus",34428,34465),("Hernando",34601,34614),("Baker",32040,32040),
+    ("Nassau",32011,32034),("Duval",32099,32277),("Clay",32003,32099),
+    ("Saint Johns",32033,32095),("Flagler",32110,32136),("Volusia",32114,32198),
+    ("Sumter",33585,34785),("Lake",32702,34797),("Pasco",33523,34691),
+    ("Pinellas",33701,34695),("Hillsborough",33510,34289),("Polk",33801,34292),
+    ("Osceola",34739,34773),("Brevard",32780,32955),("Orange",32703,34761),
+    ("Seminole",32701,32773),("Manatee",34201,34292),("Sarasota",34201,34293),
+    ("Charlotte",33946,33982),("DeSoto",34266,34269),("Highlands",33825,33876),
+    ("Hardee",33834,33843),("Okeechobee",34972,34974),("Indian River",32948,32968),
+    ("Saint Lucie",34945,34990),("Martin",34994,34997),("Palm Beach",33401,33498),
+    ("Broward",33004,33388),("Miami-Dade",33010,33299),("Collier",34101,34145),
+    ("Lee",33901,34107),("Monroe",33001,33999),
+]
+
+def _zip_to_county(zip_str):
+    """Map a 5-digit FL ZIP to a county name, or None."""
+    try:
+        z = int(zip_str)
+    except (ValueError, TypeError):
+        return None
+    for county, lo, hi in _FL_ZIP_RANGES:
+        if lo <= z <= hi:
+            return county
+    return None
+
+
+def _nearest_airport(lat, lon):
+    """Return the airport in _FL_AIRPORTS closest to (lat, lon)."""
+    import math
+    best, best_dist = _FL_AIRPORTS[0], float("inf")
+    for apt in _FL_AIRPORTS:
+        d = math.sqrt((apt["lat"] - lat) ** 2 + (apt["lon"] - lon) ** 2)
+        if d < best_dist:
+            best, best_dist = apt, d
+    return best
+
+
+def _fetch_nearby_resources(lat: float, lon: float, radius_m: int = 5000) -> dict:
+    """
+    Query OpenStreetMap Overpass API for fire stations, hospitals, and supermarkets
+    within `radius_m` metres of (lat, lon).
+    Returns dict with keys: fire_stations, hospitals, supermarkets — each a list of dicts.
+    Never raises; returns empty lists on any error.
+    """
+    query = f"""
+[out:json][timeout:20];
+(
+  node["amenity"="fire_station"](around:{radius_m},{lat},{lon});
+  way["amenity"="fire_station"](around:{radius_m},{lat},{lon});
+  node["amenity"="hospital"](around:{radius_m},{lat},{lon});
+  way["amenity"="hospital"](around:{radius_m},{lat},{lon});
+  node["shop"="supermarket"](around:{radius_m},{lat},{lon});
+  way["shop"="supermarket"](around:{radius_m},{lat},{lon});
+);
+out center;
+"""
+    result = {"fire_stations": [], "hospitals": [], "supermarkets": []}
+    try:
+        resp = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": query},
+            timeout=25,
+            headers={"User-Agent": "FPREN/1.0"},
+        )
+        resp.raise_for_status()
+        elements = resp.json().get("elements", [])
+    except Exception:
+        return result
+
+    import math as _math
+
+    def _dist_km(elat, elon):
+        dlat = (elat - lat) * math.pi / 180
+        dlon = (elon - lon) * math.pi / 180
+        a = math.sin(dlat/2)**2 + math.cos(lat*math.pi/180)*math.cos(elat*math.pi/180)*math.sin(dlon/2)**2
+        return round(6371 * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a)), 3)
+
+    seen = set()
+    for el in elements:
+        tags = el.get("tags", {})
+        # For ways, Overpass returns a "center" object
+        elat = el.get("lat") or (el.get("center") or {}).get("lat")
+        elon = el.get("lon") or (el.get("center") or {}).get("lon")
+        if elat is None or elon is None:
+            continue
+        name = tags.get("name") or tags.get("operator") or "Unnamed"
+        key  = name.lower().strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        phone  = tags.get("phone") or tags.get("contact:phone") or ""
+        addr   = ", ".join(filter(None, [
+            tags.get("addr:housenumber", ""),
+            tags.get("addr:street", ""),
+            tags.get("addr:city", ""),
+        ]))
+        entry = {
+            "name":     name,
+            "address":  addr,
+            "phone":    phone,
+            "lat":      elat,
+            "lon":      elon,
+            "dist_km":  _dist_km(elat, elon),
+        }
+        amenity = tags.get("amenity", "")
+        shop    = tags.get("shop", "")
+        if amenity == "fire_station":
+            result["fire_stations"].append(entry)
+        elif amenity == "hospital":
+            result["hospitals"].append(entry)
+        elif shop == "supermarket":
+            result["supermarkets"].append(entry)
+
+    # Sort each list by distance
+    for k in result:
+        result[k].sort(key=lambda x: x["dist_km"])
+
+    return result
+
+
+@app.route("/api/lookup/nearby-resources")
+def api_lookup_nearby_resources():
+    """
+    GET /api/lookup/nearby-resources?lat=29.65&lon=-82.33&radius_m=5000
+    Returns nearest fire stations, hospitals, and supermarkets via OpenStreetMap.
+    """
+    try:
+        lat      = float(request.args["lat"])
+        lon      = float(request.args["lon"])
+        radius_m = int(request.args.get("radius_m", 5000))
+    except (KeyError, ValueError):
+        return jsonify({"ok": False, "message": "lat and lon are required numeric params"}), 400
+    resources = _fetch_nearby_resources(lat, lon, radius_m)
+    return jsonify({"ok": True, "radius_m": radius_m, **resources})
+
+
+@app.route("/api/lookup/city-by-zip")
+def api_lookup_city_by_zip():
+    """
+    GET /api/lookup/city-by-zip?zip=32601
+    Returns: { county, city, lat, lon, nearest_airport_icao, nearest_airport_name }
+    """
+    zip_str = request.args.get("zip", "").strip()
+    if not zip_str or not zip_str.isdigit() or len(zip_str) != 5:
+        return jsonify({"ok": False, "message": "Valid 5-digit ZIP required"}), 400
+
+    county = _zip_to_county(zip_str)
+    if county is None:
+        return jsonify({"ok": False, "message": "ZIP not found in FL range"}), 404
+
+    lat, lon = _FL_COUNTY_CENTROIDS.get(county, (29.65, -82.33))
+    apt = _nearest_airport(lat, lon)
+
+    return jsonify({
+        "ok":                   True,
+        "zip":                  zip_str,
+        "county":               county,
+        "city":                 apt["city"],
+        "lat":                  lat,
+        "lon":                  lon,
+        "nearest_airport_icao": apt["icao"],
+        "nearest_airport_name": apt["name"],
+    })
+
+
+@app.route("/api/lookup/geocode")
+def api_lookup_geocode():
+    """
+    GET /api/lookup/geocode?address=1600+SW+23rd+Dr&zip=32608
+    Geocodes the address via Nominatim (OpenStreetMap), falls back to ZIP
+    centroid if Nominatim fails or returns no results.
+    Returns: { lat, lon, county, city, nearest_airport_icao, nearest_airport_name,
+               source: "nominatim"|"zip_centroid" }
+    """
+    address = request.args.get("address", "").strip()
+    zip_str = request.args.get("zip", "").strip()
+
+    if not address and (not zip_str or not zip_str.isdigit() or len(zip_str) != 5):
+        return jsonify({"ok": False, "message": "address or valid ZIP required"}), 400
+
+    lat = lon = None
+    source = "zip_centroid"
+
+    # Try Nominatim geocoding first
+    if address:
+        query = address
+        if zip_str:
+            query = f"{address}, {zip_str}, Florida, USA"
+        else:
+            query = f"{address}, Florida, USA"
+        try:
+            resp = requests.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": query, "format": "json", "limit": 1, "countrycodes": "us"},
+                timeout=10,
+                headers={"User-Agent": "FPREN/1.0 (florida-public-radio-emergency-network)"},
+            )
+            resp.raise_for_status()
+            results = resp.json()
+            if results:
+                lat = float(results[0]["lat"])
+                lon = float(results[0]["lon"])
+                source = "nominatim"
+        except Exception:
+            pass  # fall through to ZIP centroid
+
+    # Fall back to ZIP centroid
+    if lat is None or lon is None:
+        if zip_str and zip_str.isdigit() and len(zip_str) == 5:
+            county = _zip_to_county(zip_str)
+            if county:
+                lat, lon = _FL_COUNTY_CENTROIDS.get(county, (29.65, -82.33))
+            else:
+                return jsonify({"ok": False, "message": "Could not geocode address and ZIP not in FL"}), 404
+        else:
+            return jsonify({"ok": False, "message": "Geocoding failed — provide a valid FL ZIP as fallback"}), 404
+
+    # Determine county from coords via ZIP fallback or reverse county lookup
+    county = None
+    if zip_str and zip_str.isdigit():
+        county = _zip_to_county(zip_str)
+    if county is None:
+        # Best-effort: find nearest county centroid
+        best_c, best_d = None, float("inf")
+        for c, (clat, clon) in _FL_COUNTY_CENTROIDS.items():
+            d = (clat - lat) ** 2 + (clon - lon) ** 2
+            if d < best_d:
+                best_c, best_d = c, d
+        county = best_c or "Alachua"
+
+    apt = _nearest_airport(lat, lon)
+
+    return jsonify({
+        "ok":                   True,
+        "lat":                  round(lat, 6),
+        "lon":                  round(lon, 6),
+        "county":               county,
+        "city":                 apt["city"],
+        "nearest_airport_icao": apt["icao"],
+        "nearest_airport_name": apt["name"],
+        "source":               source,
+    })
+
+
+# -------------------- BCP REPORT GENERATION --------------------
+
+_bcp_lock    = __import__("threading").Lock()
+_bcp_running = {"value": False}
+BCP_RSCRIPT  = "/home/ufuser/Fpren-main/reports/business_continuity_report.Rmd"
+
+
+@app.route("/api/reports/generate-bcp", methods=["POST"])
+@login_required
+def api_report_generate_bcp():
+    """
+    Render a Business Continuity Plan PDF for a specific user asset.
+    POST body: { username, asset_id }   (admin required, or own username)
+    """
+    import subprocess
+
+    data     = request.get_json(silent=True) or {}
+    username = data.get("username", "").strip()
+    asset_id = data.get("asset_id", "").strip()
+
+    if not username or not asset_id:
+        return jsonify({"ok": False, "message": "username and asset_id required"}), 400
+
+    if current_user.role != "admin" and current_user.username != username:
+        return jsonify({"ok": False, "message": "Forbidden"}), 403
+
+    with _bcp_lock:
+        if _bcp_running["value"]:
+            return jsonify({"ok": False, "message": "A BCP is already generating. Please wait."}), 409
+        _bcp_running["value"] = True
+
+    # Fetch the specific asset
+    _, assets = _get_user_assets(username)
+    asset = next((a for a in assets if str(a.get("asset_id")) == asset_id), None)
+    if asset is None:
+        _bcp_running["value"] = False
+        return jsonify({"ok": False, "message": "Asset not found"}), 404
+
+    import os
+    from datetime import datetime, timezone
+
+    stamp     = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    safe_name = "".join(c if c.isalnum() else "_" for c in asset.get("asset_name", "asset"))
+    out_file  = os.path.join(REPORTS_DIR, f"bcp_{username}_{safe_name}_{stamp}.pdf")
+
+    # Build an inline R script that renders the Rmd with the asset params
+    lat = float(asset.get("lat", 29.65))
+    lon = float(asset.get("lon", -82.33))
+    r_script = f"""
+suppressPackageStartupMessages({{library(rmarkdown); library(withr)}})
+withr::with_dir(tempdir(), rmarkdown::render(
+  input             = {repr(BCP_RSCRIPT)},
+  output_file       = {repr(out_file)},
+  intermediates_dir = tempdir(),
+  params = list(
+    username             = {repr(username)},
+    asset_name           = {repr(asset.get("asset_name",""))},
+    address              = {repr(asset.get("address",""))},
+    lat                  = {lat},
+    lon                  = {lon},
+    zip                  = {repr(asset.get("zip",""))},
+    city                 = {repr(asset.get("city",""))},
+    nearest_airport_icao = {repr(asset.get("nearest_airport_icao","KGNV"))},
+    nearest_airport_name = {repr(asset.get("nearest_airport_name","Gainesville Regional"))},
+    asset_type           = {repr(asset.get("asset_type","Facility"))},
+    notes                = {repr(asset.get("notes",""))},
+    mongo_uri            = "mongodb://localhost:27017/",
+    days_back            = 30
+  ),
+  quiet = TRUE
+))
+cat("BCP_OUTPUT_FILE:", {repr(out_file)}, "\\n")
+"""
+
+    try:
+        result = subprocess.run(
+            ["/usr/bin/Rscript", "-e", r_script],
+            capture_output=True, text=True, timeout=300,
+            env={**os.environ, "MONGO_URI": "mongodb://localhost:27017/"},
+        )
+        _bcp_running["value"] = False
+        if result.returncode != 0:
+            return jsonify({"ok": False, "message": (result.stderr or result.stdout)[-500:]}), 500
+        filename = os.path.basename(out_file)
+        return jsonify({"ok": True, "filename": filename,
+                        "message": f"BCP generated: {filename}"})
+    except subprocess.TimeoutExpired:
+        _bcp_running["value"] = False
+        return jsonify({"ok": False, "message": "BCP generation timed out (>5 min)"}), 504
+    except Exception as exc:
+        _bcp_running["value"] = False
+        return jsonify({"ok": False, "message": str(exc)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CENSUS DATA API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _census_analyzer():
+    """Lazy-import census_ai_analyzer (avoids path issues at startup)."""
+    import sys, os
+    fpren_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+    if fpren_root not in sys.path:
+        sys.path.insert(0, fpren_root)
+    import importlib
+    return importlib.import_module("weather_rss.census_ai_analyzer")
+
+
+@app.route("/api/census/counties")
+def api_census_counties():
+    """Return all FL counties with census data, sorted by vulnerability score."""
+    try:
+        ca = _census_analyzer()
+        docs = ca.get_all_counties_census()
+        # Strip MongoDB _id, truncate raw int fields for JSON efficiency
+        clean = []
+        for d in docs:
+            d.pop("_id", None)
+            clean.append({
+                "county":                 d.get("county"),
+                "fips_county":            d.get("fips_county"),
+                "year":                   d.get("year"),
+                "population_total":       d.get("population_total"),
+                "pct_65plus":             d.get("pct_65plus"),
+                "pct_under18":            d.get("pct_under18"),
+                "pct_poverty":            d.get("pct_poverty"),
+                "pct_limited_english":    d.get("pct_limited_english"),
+                "pct_disability":         d.get("pct_disability"),
+                "median_household_income":d.get("median_household_income"),
+                "vulnerability_score":    d.get("vulnerability_score"),
+                "vulnerability_label":    ca.vulnerability_label(d.get("vulnerability_score", 0)),
+                "fetched_at":             d.get("fetched_at"),
+            })
+        return jsonify({"ok": True, "count": len(clean), "counties": clean})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e), "counties": []}), 500
+
+
+@app.route("/api/census/county/<county_name>")
+def api_census_county(county_name):
+    """Return full census record for a single county."""
+    try:
+        ca = _census_analyzer()
+        doc = ca.get_county_census(county_name)
+        if doc is None:
+            return jsonify({"ok": False, "message": f"No census data for {county_name}"}), 404
+        doc.pop("_id", None)
+        doc["vulnerability_label"] = ca.vulnerability_label(doc.get("vulnerability_score", 0))
+        return jsonify({"ok": True, "data": doc})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/census/analysis/<county_name>")
+def api_census_analysis(county_name):
+    """
+    Return LiteLLM-generated vulnerability analysis for a county.
+    Query params:
+      ?mode=vulnerability|impact|bcp   (default: vulnerability)
+      ?asset=<asset name>              (for BCP mode)
+    """
+    mode       = request.args.get("mode", "vulnerability")
+    asset_name = request.args.get("asset", "")
+    try:
+        ca    = _census_analyzer()
+        census = ca.get_county_census(county_name)
+        if census is None:
+            return jsonify({"ok": False, "message": f"No census data for {county_name}"}), 404
+
+        if mode == "impact":
+            alerts = ca.get_active_alerts_for_county(county_name)
+            text   = ca.analyze_alert_impact(county_name, alerts, census)
+            return jsonify({"ok": True, "mode": mode, "county": county_name,
+                            "alert_count": len(alerts), "analysis": text})
+        elif mode == "bcp":
+            text = ca.analyze_bcp_demographics(county_name, asset_name, census)
+            return jsonify({"ok": True, "mode": mode, "county": county_name,
+                            "asset": asset_name, "analysis": text})
+        else:
+            text = ca.analyze_county_vulnerability(county_name, census)
+            return jsonify({"ok": True, "mode": mode, "county": county_name,
+                            "vulnerability_score": census.get("vulnerability_score"),
+                            "vulnerability_label": ca.vulnerability_label(census.get("vulnerability_score", 0)),
+                            "analysis": text})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/census/impact/<alert_id>")
+def api_census_alert_impact(alert_id):
+    """Return census-enriched alert with AI population impact assessment."""
+    try:
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
+        from bson import ObjectId
+        try:
+            oid = ObjectId(alert_id)
+            alert = client["weather_rss"]["nws_alerts"].find_one({"_id": oid})
+        except Exception:
+            alert = client["weather_rss"]["nws_alerts"].find_one({"alert_id": alert_id})
+        client.close()
+        if not alert:
+            return jsonify({"ok": False, "message": "Alert not found"}), 404
+        alert.pop("_id", None)
+        ca = _census_analyzer()
+        enriched = ca.enrich_alert_with_census(alert)
+        return jsonify({"ok": True, "alert": enriched})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/census/refresh", methods=["POST"])
+@login_required
+def api_census_refresh():
+    """Trigger a fresh census data pull from the Census Bureau API. Admin only."""
+    if current_user.role != "admin":
+        return jsonify({"ok": False, "message": "Admin only"}), 403
+    import subprocess
+    fetcher = os.path.join(os.path.dirname(__file__), "..", "fl_census_fetcher.py")
+    fetcher = os.path.normpath(fetcher)
+    try:
+        result = subprocess.run(
+            ["python3", fetcher],
+            capture_output=True, text=True, timeout=60,
+            cwd=os.path.dirname(fetcher),
+            env={**os.environ, "MONGO_URI": MONGO_URI},
+        )
+        output = result.stdout + result.stderr
+        if result.returncode == 0:
+            return jsonify({"ok": True, "message": output.strip()[-300:]})
+        return jsonify({"ok": False, "message": output.strip()[-400:]}), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": False, "message": "Census fetch timed out (>60s)"}), 504
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EVACUATION DATA API
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/evacuation/zones")
+def api_evacuation_zones():
+    """Return all FL hurricane evacuation zones, optionally filtered by county."""
+    county = request.args.get("county", "").strip()
+    try:
+        col = db["fl_evacuation_zones"]
+        query = {}
+        if county:
+            query["county"] = {"$regex": f"^{county}$", "$options": "i"}
+        docs = list(col.find(query, {"_id": 0}).sort([("county", 1), ("zone_order", 1)]))
+        return jsonify({"ok": True, "count": len(docs), "zones": docs})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e), "zones": []}), 500
+
+
+@app.route("/api/evacuation/routes")
+def api_evacuation_routes():
+    """Return FL evacuation routes, optionally filtered by county or region."""
+    county = request.args.get("county", "").strip()
+    region = request.args.get("region", "").strip()
+    try:
+        col = db["fl_evacuation_routes"]
+        query = {}
+        if county:
+            query["county"] = {"$regex": f"^{county}$", "$options": "i"}
+        if region:
+            query["region"] = {"$regex": region, "$options": "i"}
+        docs = list(col.find(query, {"_id": 0}).sort([("county", 1), ("route_type", 1)]))
+        return jsonify({"ok": True, "count": len(docs), "routes": docs})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e), "routes": []}), 500
+
+
+@app.route("/api/evacuation/county/<county_name>")
+def api_evacuation_county(county_name):
+    """Return zones and routes for a single county plus any active traffic on those roads."""
+    try:
+        zones_col  = db["fl_evacuation_zones"]
+        routes_col = db["fl_evacuation_routes"]
+        traffic_col = db["fl_traffic"]
+
+        zones  = list(zones_col.find(
+            {"county": {"$regex": f"^{county_name}$", "$options": "i"}},
+            {"_id": 0}
+        ).sort("zone_order", 1))
+
+        routes = list(routes_col.find(
+            {"county": {"$regex": f"^{county_name}$", "$options": "i"}},
+            {"_id": 0}
+        ).sort("route_type", 1))
+
+        # Pull traffic incidents that match any route road name
+        road_names = list({r["road"] for r in routes if r.get("road")})
+        traffic = []
+        if road_names:
+            road_regex = "|".join(road_names[:10])
+            traffic = list(traffic_col.find(
+                {"$or": [
+                    {"county": {"$regex": f"^{county_name}$", "$options": "i"}},
+                    {"road":   {"$regex": road_regex, "$options": "i"}},
+                ]},
+                {"_id": 0}
+            ).limit(20))
+
+        # Highest-risk zone for this county
+        highest_zone = zones[0]["zone"] if zones else None
+
+        return jsonify({
+            "ok":          True,
+            "county":      county_name,
+            "zones":       zones,
+            "routes":      routes,
+            "traffic":     traffic,
+            "highest_zone": highest_zone,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/evacuation/refresh", methods=["POST"])
+@login_required
+def api_evacuation_refresh():
+    """Trigger a fresh evacuation data pull. Admin only."""
+    if current_user.role != "admin":
+        return jsonify({"ok": False, "message": "Admin only"}), 403
+    import subprocess
+    fetcher = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "fl_evacuation_fetcher.py")
+    )
+    try:
+        result = subprocess.run(
+            ["python3", fetcher],
+            capture_output=True, text=True, timeout=60,
+            cwd=os.path.dirname(fetcher),
+            env={**os.environ, "MONGO_URI": MONGO_URI},
+        )
+        output = result.stdout + result.stderr
+        if result.returncode == 0:
+            return jsonify({"ok": True, "message": output.strip()[-300:]})
+        return jsonify({"ok": False, "message": output.strip()[-400:]}), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": False, "message": "Evacuation fetch timed out (>60s)"}), 504
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Waze for Cities API
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/waze/alerts")
+def api_waze_alerts():
+    """Return recent Waze alerts, optionally filtered by type or bounding box."""
+    try:
+        query = {}
+        alert_type = request.args.get("type", "").strip().upper()
+        city        = request.args.get("city", "").strip()
+        hours       = int(request.args.get("hours", 2))
+        limit       = min(int(request.args.get("limit", 500)), 2000)
+
+        if alert_type:
+            query["type"] = alert_type
+        if city:
+            query["city"] = {"$regex": city, "$options": "i"}
+        if hours > 0:
+            from datetime import datetime, timezone, timedelta
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+            query["fetched_at"] = {"$gte": cutoff}
+
+        docs = list(db["waze_alerts"].find(query, {"_id": 0}).limit(limit))
+        return jsonify({"ok": True, "count": len(docs), "alerts": docs})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/waze/jams")
+def api_waze_jams():
+    """Return recent Waze jams, optionally filtered by level or city."""
+    try:
+        query = {}
+        city      = request.args.get("city", "").strip()
+        min_level = request.args.get("min_level", "")
+        hours     = int(request.args.get("hours", 2))
+        limit     = min(int(request.args.get("limit", 300)), 2000)
+
+        if city:
+            query["city"] = {"$regex": city, "$options": "i"}
+        if min_level.isdigit():
+            query["level"] = {"$gte": int(min_level)}
+        if hours > 0:
+            from datetime import datetime, timezone, timedelta
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+            query["fetched_at"] = {"$gte": cutoff}
+
+        docs = list(db["waze_jams"].find(query, {"_id": 0}).limit(limit))
+        return jsonify({"ok": True, "count": len(docs), "jams": docs})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/waze/nearby")
+def api_waze_nearby():
+    """
+    Return Waze alerts and jams within `radius_m` metres of a lat/lon point.
+    Query params: lat, lon, radius_m (default 10000), hours (default 2)
+    Uses MongoDB $nearSphere on the 2dsphere `location` index.
+    """
+    try:
+        lat      = float(request.args["lat"])
+        lon      = float(request.args["lon"])
+        radius_m = float(request.args.get("radius_m", 10000))
+        hours    = int(request.args.get("hours", 2))
+
+        from datetime import datetime, timezone, timedelta
+        time_query = {}
+        if hours > 0:
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+            time_query["fetched_at"] = {"$gte": cutoff}
+
+        geo_query = {
+            "location": {
+                "$nearSphere": {
+                    "$geometry":    {"type": "Point", "coordinates": [lon, lat]},
+                    "$maxDistance": radius_m,
+                }
+            }
+        }
+
+        alert_query = {**geo_query, **time_query}
+        jam_query   = {**geo_query, **time_query}
+
+        alerts = list(db["waze_alerts"].find(alert_query, {"_id": 0}).limit(200))
+        jams   = list(db["waze_jams"].find(jam_query,   {"_id": 0}).limit(100))
+
+        return jsonify({
+            "ok":       True,
+            "origin":   {"lat": lat, "lon": lon},
+            "radius_m": radius_m,
+            "n_alerts": len(alerts),
+            "n_jams":   len(jams),
+            "alerts":   alerts,
+            "jams":     jams,
+        })
+    except KeyError as e:
+        return jsonify({"ok": False, "message": f"Missing required param: {e}"}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/waze/status")
+def api_waze_status():
+    """Return counts and freshness of Waze data in MongoDB."""
+    try:
+        from datetime import datetime, timezone, timedelta
+        n_alerts = db["waze_alerts"].count_documents({})
+        n_jams   = db["waze_jams"].count_documents({})
+        latest_a = db["waze_alerts"].find_one({}, {"fetched_at": 1, "_id": 0},
+                                              sort=[("fetched_at", -1)])
+        latest_j = db["waze_jams"].find_one({}, {"fetched_at": 1, "_id": 0},
+                                            sort=[("fetched_at", -1)])
+        return jsonify({
+            "ok":              True,
+            "n_alerts":        n_alerts,
+            "n_jams":          n_jams,
+            "last_alert_at":   latest_a.get("fetched_at") if latest_a else None,
+            "last_jam_at":     latest_j.get("fetched_at") if latest_j else None,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/waze/refresh", methods=["POST"])
+@login_required
+def api_waze_refresh():
+    """Trigger a single Waze feed fetch. Admin only."""
+    if current_user.role != "admin":
+        return jsonify({"ok": False, "message": "Admin only"}), 403
+    import subprocess
+    fetcher = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "waze_fetcher.py")
+    )
+    try:
+        result = subprocess.run(
+            ["python3", fetcher],
+            capture_output=True, text=True, timeout=60,
+            cwd=os.path.dirname(fetcher),
+            env={**os.environ, "MONGO_URI": MONGO_URI},
+        )
+        output = result.stdout + result.stderr
+        if result.returncode == 0:
+            return jsonify({"ok": True, "message": output.strip()[-300:]})
+        return jsonify({"ok": False, "message": output.strip()[-400:]}), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": False, "message": "Waze fetch timed out (>60s)"}), 504
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI Agent API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _agent_available():
+    """Return (ok, error_msg) — checks LiteLLM key is configured."""
+    try:
+        import sys as _sys
+        root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+        if root not in _sys.path:
+            _sys.path.insert(0, root)
+        from weather_station.services.ai_client import is_configured
+        if not is_configured():
+            return False, "UF_LITELLM_API_KEY is not set"
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+AGENT_SYSTEM_PROMPT = """\
+You are the FPREN Operator Assistant — an AI embedded in the Florida Public Radio \
+Emergency Network dashboard. You have access to tools that query live MongoDB data \
+including NWS/IPAWS weather alerts, METAR observations, FL511 traffic incidents, \
+Waze real-time alerts, US Census demographics, Florida hurricane evacuation zones \
+and routes, and Icecast stream status. \
+Answer concisely and factually, always using the tools to get current data. \
+Do not make up numbers — call the appropriate tool. \
+When done, give a clear plain-English answer.\
+"""
+
+
+@app.route("/api/agent/chat", methods=["POST"])
+@login_required
+def api_agent_chat():
+    """POST {message: str} → {ok, response, tool_calls, iterations}"""
+    ok, err = _agent_available()
+    if not ok:
+        return jsonify({"ok": False, "error": f"AI not configured: {err}"}), 503
+
+    data    = request.get_json(silent=True) or {}
+    message = data.get("message", "").strip()
+    if not message:
+        return jsonify({"ok": False, "error": "message is required"}), 400
+
+    try:
+        import sys as _sys
+        root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+        if root not in _sys.path:
+            _sys.path.insert(0, root)
+        from weather_station.services.ai_client import run_agent
+        from weather_rss.agent_tools import TOOL_SCHEMAS_READONLY, TOOL_FUNCTIONS
+
+        result = run_agent(
+            system_prompt   = AGENT_SYSTEM_PROMPT,
+            tools           = TOOL_SCHEMAS_READONLY,
+            tool_functions  = TOOL_FUNCTIONS,
+            initial_message = message,
+            max_iterations  = 8,
+            max_tokens      = 512,
+        )
+        return jsonify({
+            "ok":         True,
+            "response":   result["response"],
+            "tool_calls": result["tool_calls"],
+            "iterations": result["iterations"],
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/agent/situation")
+def api_agent_situation():
+    """GET — return the most recent saved situation report."""
+    try:
+        doc = db["situation_reports"].find_one({}, {"_id": 0},
+                                               sort=[("generated_at", -1)])
+        if not doc:
+            return jsonify({"ok": False, "text": None})
+        return jsonify({"ok": True, **doc})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/agent/situation/generate", methods=["POST"])
+@login_required
+def api_agent_situation_generate():
+    """POST — run the situation awareness agent and return the new report. Admin only."""
+    if current_user.role != "admin":
+        return jsonify({"ok": False, "error": "Admin role required"}), 403
+    ok, err = _agent_available()
+    if not ok:
+        return jsonify({"ok": False, "error": f"AI not configured: {err}"}), 503
+
+    try:
+        import sys as _sys
+        root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+        if root not in _sys.path:
+            _sys.path.insert(0, root)
+        from weather_station.services.ai_client import run_agent
+        from weather_rss.agent_tools import TOOL_SCHEMAS_WRITE, TOOL_FUNCTIONS
+        from weather_rss.situation_agent import SYSTEM_PROMPT, TASK_PROMPT
+
+        result = run_agent(
+            system_prompt   = SYSTEM_PROMPT,
+            tools           = TOOL_SCHEMAS_WRITE,
+            tool_functions  = TOOL_FUNCTIONS,
+            initial_message = TASK_PROMPT,
+            max_iterations  = 12,
+            max_tokens      = 600,
+        )
+        from datetime import datetime, timezone
+        return jsonify({
+            "ok":         True,
+            "text":       result["response"],
+            "tool_calls": result["tool_calls"],
+            "iterations": result["iterations"],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 @app.route("/feedback", methods=["POST"])
 def submit_feedback():

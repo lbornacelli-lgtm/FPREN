@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh FPREN Florida Census data monthly
+
+[Timer]
+Unit=beacon-census-fetcher.service
+OnCalendar=monthly
+AccuracySec=1d
+Persistent=true
+
+[Install]
+WantedBy=timers.target

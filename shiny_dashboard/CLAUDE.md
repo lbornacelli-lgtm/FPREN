@@ -328,6 +328,50 @@ sudo Rscript -e "install.packages('package_name', repos='https://cran.rstudio.co
 
 ---
 
+## Business Continuity Plans (added 2026-04-03)
+
+### Reports Tab — BCP Section
+New section below Weather Trends reports:
+- `bcp_username` selectInput — admin picks a user (populated from MongoDB `users`)
+- `bcp_asset_id` selectInput — populated by asset list when user selected
+- `btn_gen_bcp` — renders `reports/business_continuity_report.Rmd` via `rmarkdown::render`
+- `bcp_email` checkbox — optionally emails PDF to the user's registered email
+- `tbl_bcp_reports` — DT table listing `bcp_*.pdf` files in `reports/output/`
+
+### Config Tab — User Assets Panel
+New conditionalPanel (admin only) below User Management:
+- `asset_mgmt_user` selectInput — pick a user to manage
+- `user_assets_table` DT — shows that user's assets (asset_name, address, city, lat, lon, icao, etc.)
+- `btn_delete_asset` — removes selected row's asset from MongoDB `$pull`
+- Add Asset form: name, address, type, zip, lat, lon with ZIP lookup button
+- `btn_lookup_zip` — calls `http://localhost:5000/api/lookup/city-by-zip?zip=<zip>`, fills city/airport dropdowns
+- `btn_add_asset` — `$push` new asset into MongoDB
+
+### Assets MongoDB Schema
+Assets stored as `assets: []` array inside each `users` document:
+```json
+{ "asset_id": "16-char-id", "asset_name": "...", "address": "...",
+  "lat": 29.65, "lon": -82.33, "zip": "32608", "city": "Gainesville",
+  "nearest_airport_icao": "KGNV", "nearest_airport_name": "Gainesville Regional",
+  "asset_type": "Radio Station", "notes": "", "created_at": "ISO8601" }
+```
+
+## Weather Cards 7-Day Hover (added 2026-04-03)
+Each `.wx-card` div now has `data-lat`, `data-lon`, `data-icao` attributes.
+JS (inline in `wx_cities_grid` renderUI) attaches `mouseenter/leave` handlers:
+- 300ms delay before showing popup
+- Calls `api.weather.gov/points/{lat},{lon}` then `/forecast`
+- Renders up to 7 daytime periods as small colored tiles
+- Caches responses in `_fcCache` keyed by `lat,lon`
+- Popup flips left/right based on screen edge detection
+
+## Playlist Priority Ordering (added 2026-04-03)
+The Normal Mode Playlist in the Zones tab now uses a drag-to-reorder list (SortableJS CDN):
+- Each row: grip handle + checkbox + label
+- Drag reorders items; checkbox includes/excludes from playlist
+- JS fires `Shiny.setInputValue('playlist_order', ...)` and `Shiny.setInputValue('normal_playlist_types', ...)`
+- `btn_save_playlist_config` saves priority-ordered types to `zone_definitions.normal_mode_types`
+
 ## Gotchas
 
 - Always deploy after editing — Shiny Server reads from `/srv/shiny-server/fpren/`, not from the repo.

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run FPREN Comprehensive Report daily at 2PM ET
+Requires=fpren-comprehensive-2pm.service
+
+[Timer]
+OnCalendar=*-*-* 18:00:00
+AccuracySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

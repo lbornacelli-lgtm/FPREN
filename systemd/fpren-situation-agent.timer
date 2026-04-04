@@ -1,0 +1,12 @@
+[Unit]
+Description=FPREN Situation Awareness Agent — runs every 15 minutes
+Requires=fpren-situation-agent.service
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+Persistent=true
+Unit=fpren-situation-agent.service
+
+[Install]
+WantedBy=timers.target

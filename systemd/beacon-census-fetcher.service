@@ -1,0 +1,16 @@
+[Unit]
+Description=FPREN Florida Census Data Fetcher
+After=network.target mongod.service
+
+[Service]
+Type=oneshot
+User=ufuser
+WorkingDirectory=/home/ufuser/Fpren-main
+ExecStart=/home/ufuser/Fpren-main/venv/bin/python3 /home/ufuser/Fpren-main/weather_rss/fl_census_fetcher.py
+Environment=MONGO_URI=mongodb://localhost:27017/
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

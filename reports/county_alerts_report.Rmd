@@ -1,6 +1,6 @@
 ---
 title: "FPREN County Alert Report"
-subtitle: "Florida Public Radio Emergency Network — `r params$county_name` County"
+subtitle: "Florida Public Radio Emergency Network — `r if (params$county_name == 'All Florida') 'All Florida' else paste(params$county_name, 'County')`"
 date: "Generated `r format(Sys.time(), '%B %d, %Y at %I:%M %p')`"
 geometry: "margin=1in"
 output:
@@ -22,7 +22,7 @@ header-includes:
   - \pagestyle{fancy}
   - \fancyhead[L]{\textcolor{fprenblue}{\textbf{FPREN}}}
   - \fancyhead[C]{\textcolor{fprenblue}{County Alert Report}}
-  - \fancyhead[R]{\textcolor{gray}{`r params$county_name` County}}
+  - \fancyhead[R]{\textcolor{gray}{`r if (params$county_name == 'All Florida') 'All Florida' else paste(params$county_name, 'County')`}}
   - \renewcommand{\headrulewidth}{0.4pt}
 params:
   county_name: "Alachua"
@@ -58,11 +58,15 @@ report_date <- if (nchar(params$date) > 0) params$date else format(Sys.Date(), "
 # Build slug for source match (mirrors county_rss_fetcher.py)
 slug <- tolower(gsub("[. ]", "_", gsub("\\.", "", county)))
 
-# Query: area_desc contains county name OR source = county_nws:{slug}
-query <- sprintf(
-  '{"$or":[{"area_desc":{"$regex":"%s","$options":"i"}},{"source":"county_nws:%s"}]}',
-  county, slug
-)
+# Query: all alerts for "All Florida", or county-specific match
+query <- if (county == "All Florida") {
+  '{}'
+} else {
+  sprintf(
+    '{"$or":[{"area_desc":{"$regex":"%s","$options":"i"}},{"source":"county_nws:%s"}]}',
+    county, slug
+  )
+}
 
 col    <- get_col("nws_alerts")
 alerts <- if (!is.null(col)) {
@@ -132,7 +136,8 @@ cat(paste0(
 
 ```{r no-alerts, results='asis'}
 if (n_total == 0) {
-  cat("\n> **No active alerts found for ", county, " County at time of report generation.**\n", sep="")
+  county_label <- if (county == "All Florida") "Florida" else paste(county, "County")
+  cat("\n> **No active alerts found for ", county_label, " at time of report generation.**\n", sep="")
   knitr::knit_exit()
 }
 ```
@@ -155,8 +160,9 @@ if (n_total > 0) {
     rename_with(~ c("Event","Severity","Area","Issued","Expires","Source")[seq_along(.)],
                 everything())
 
+  county_label <- if (county == "All Florida") "Florida" else paste(county, "County")
   kable(display, booktabs = TRUE, longtable = TRUE,
-        caption = paste0("All active NWS alerts for ", county, " County")) %>%
+        caption = paste0("All active NWS alerts for ", county_label)) %>%
     kable_styling(
       latex_options = c("striped","hold_position","repeat_header"),
       font_size = 8

@@ -1,0 +1,958 @@
+---
+title: "FPREN — Florida Public Radio Emergency Network"
+subtitle: "Project Report"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_width: 7
+    fig_height: 4
+    includes:
+      in_header: null
+geometry: "margin=1in"
+fontsize: 11pt
+header-includes:
+  - \usepackage{xcolor}
+  - \usepackage{fancyhdr}
+  - \usepackage{graphicx}
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+  - \usepackage{array}
+  - \usepackage{hyperref}
+  - \definecolor{FPREN_BLUE}{HTML}{003087}
+  - \definecolor{FPREN_ORANGE}{HTML}{FA4616}
+  - \definecolor{LIGHT_GRAY}{HTML}{F5F5F5}
+  - \pagestyle{fancy}
+  - \fancyhf{}
+  - \fancyhead[L]{\textcolor{FPREN_BLUE}{\textbf{FPREN} — Florida Public Radio Emergency Network}}
+  - \fancyhead[R]{\textcolor{gray}{\small Confidential}}
+  - \fancyfoot[C]{\textcolor{gray}{\small Page \thepage}}
+  - \renewcommand{\headrulewidth}{0.4pt}
+  - \hypersetup{colorlinks=true, linkcolor=FPREN_BLUE, urlcolor=FPREN_BLUE}
+params:
+  mongo_uri: "mongodb://localhost:27017/"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+library(mongolite)
+library(knitr)
+library(kableExtra)
+
+FPREN_BLUE  <- "#003087"
+FPREN_ORANGE <- "#FA4616"
+
+safe_mongo <- function(collection, db="weather_rss", uri=params$mongo_uri) {
+  tryCatch(mongo(collection=collection, db=db, url=uri), error=function(e) NULL)
+}
+
+fmt_num <- function(x) formatC(x, format="d", big.mark=",")
+```
+
+\newpage
+
+# Executive Summary
+
+```{r exec-summary}
+# Pull live counts
+m_alerts  <- safe_mongo("nws_alerts")
+m_wavs    <- safe_mongo("zone_alert_wavs")
+m_zones   <- safe_mongo("zone_definitions")
+m_users   <- safe_mongo("users")
+m_traffic <- safe_mongo("fl_traffic")
+m_metar   <- safe_mongo("airport_metar")
+m_history <- safe_mongo("weather_history")
+m_census  <- safe_mongo("fl_census")
+m_audit   <- safe_mongo("user_audit_log")
+
+n_alerts  <- if(!is.null(m_alerts))  m_alerts$count()  else 0
+n_wavs    <- if(!is.null(m_wavs))    m_wavs$count()    else 0
+n_zones   <- if(!is.null(m_zones))   m_zones$count()   else 0
+n_users   <- if(!is.null(m_users))   m_users$count()   else 0
+n_traffic <- if(!is.null(m_traffic)) m_traffic$count() else 0
+n_metar   <- if(!is.null(m_metar))   m_metar$count()   else 0
+n_history <- if(!is.null(m_history)) m_history$count() else 0
+n_census  <- if(!is.null(m_census))  m_census$count()  else 0
+n_audit   <- if(!is.null(m_audit))   m_audit$count()   else 0
+```
+
+\textcolor{FPREN_BLUE}{\textbf{FPREN (Florida Public Radio Emergency Network)}} is a fully automated 24/7 weather radio broadcast system built on a University of Florida virtual machine. It monitors all active NWS/IPAWS weather alerts across Florida, converts them to speech using AI-enhanced text-to-speech, and streams audio in real time to 9 regional Icecast streams covering the entire state.
+
+The system is operational as of April 2026. All core services are running and monitored via systemd. The project is hosted at `128.227.67.234` (UF VM) with the Shiny dashboard accessible at port 3838 (pending UF IT firewall approval for ports 80/443).
+
+```{r exec-table}
+exec_df <- data.frame(
+  Metric = c(
+    "Active NWS Alerts in Database",
+    "Audio Files Generated (all zones)",
+    "Broadcast Zones",
+    "FL Traffic Incidents",
+    "Airport METAR Records",
+    "Weather History Records (90-day)",
+    "Florida Census Records (67 counties)",
+    "Dashboard Users",
+    "Audit Log Events",
+    "Icecast Streams Active",
+    "Systemd Services Running",
+    "Systemd Timers Active"
+  ),
+  Value = c(
+    fmt_num(n_alerts),
+    fmt_num(n_wavs),
+    fmt_num(n_zones),
+    fmt_num(n_traffic),
+    fmt_num(n_metar),
+    fmt_num(n_history),
+    fmt_num(n_census),
+    fmt_num(n_users),
+    fmt_num(n_audit),
+    "9 (all live)",
+    "15 running",
+    "5 active"
+  )
+)
+
+kable(exec_df, booktabs=TRUE, col.names=c("Metric", "Current Value"),
+      caption="Live System Statistics — Generated at Report Time") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=10) %>%
+  column_spec(1, bold=TRUE, width="10cm") %>%
+  column_spec(2, width="4cm")
+```
+
+\newpage
+
+# System Architecture
+
+## Infrastructure Overview
+
+FPREN runs on a single Ubuntu 24.04 LTS virtual machine hosted by the University of Florida.
+
+```{r arch-table}
+arch_df <- data.frame(
+  Component = c("Server", "Operating System", "Primary Language (Backend)", "Primary Language (Dashboard)",
+                "Database", "Audio Streaming", "Web Proxy", "Git Repository"),
+  Detail = c(
+    "128.227.67.234 (UF VM, /home/ufuser/Fpren-main)",
+    "Ubuntu 24.04 LTS (Noble Numbat)",
+    "Python 3 (venv at ~/Fpren-main/venv)",
+    "R / Shiny Server",
+    "MongoDB (weather_rss database, port 27017)",
+    "Icecast 2.4.4 (port 8000, 9 zone mounts)",
+    "Nginx 1.24.0 (ports 80→443→3838)",
+    "github.com/lbornacelli-lgtm/FPREN.git"
+  )
+)
+kable(arch_df, booktabs=TRUE, col.names=c("Component","Detail"),
+      caption="Infrastructure Summary") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=10) %>%
+  column_spec(1, bold=TRUE, width="5.5cm") %>%
+  column_spec(2, width="9cm")
+```
+
+## Port Map
+
+```{r port-table}
+port_df <- data.frame(
+  Port = c("80","443","3838","5000","8000","8787","27017"),
+  Service = c("Nginx (HTTP redirect)","Nginx HTTPS → Shiny","Shiny Server (direct)",
+              "Flask Admin Dashboard","Icecast (9 zone streams)","RStudio Server","MongoDB"),
+  Status = c("Pending UF IT","Pending UF IT","Active","Active","Active (ext. blocked)","Active","Internal only")
+)
+kable(port_df, booktabs=TRUE, caption="Port Assignments") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=10)
+```
+
+## Repository Structure
+
+The project is organized into four major subsystems:
+
+\begin{itemize}
+  \item \textbf{weather\_rss/} — Data ingestion pipeline (NWS alerts, ASOS obs, FL511 traffic, FAA delays)
+  \item \textbf{weather\_station/} — Broadcast engine (TTS, zone audio, Icecast streaming, AI)
+  \item \textbf{shiny\_dashboard/} — Primary monitoring dashboard (R Shiny, authenticated)
+  \item \textbf{reports/} — R Markdown report templates + scheduled PDF generation
+\end{itemize}
+
+\newpage
+
+# Active Services
+
+## Systemd Services
+
+```{r services-table}
+svc_df <- data.frame(
+  Service = c(
+    "beacon-web-dashboard",
+    "beacon-station-engine",
+    "beacon-ipaws-fetcher",
+    "beacon-obs-fetcher",
+    "beacon-extended-fetcher",
+    "beacon-mongo-tts",
+    "zone-alert-tts",
+    "fpren-broadcast-generator",
+    "fpren-multi-zone-streamer",
+    "beacon-airport-delays",
+    "beacon-weather-service",
+    "icecast2",
+    "shiny-server",
+    "mongod",
+    "nginx"
+  ),
+  Purpose = c(
+    "Flask admin dashboard (port 5000)",
+    "TTS + Icecast broadcast engine",
+    "NWS/IPAWS alert fetcher (every 2 min)",
+    "19 FL ASOS station observations (every 15 min)",
+    "Extended forecasts + FL511 traffic (every 30 min)",
+    "MongoDB TTS monitor",
+    "Alert → MP3 per zone (main audio pipeline)",
+    "AI broadcast scripts → MP3 per zone",
+    "FFmpeg → Icecast streamer (9 zones on port 8000)",
+    "FAA airport delay fetcher (blocked by UF IT)",
+    "Weather history storage service",
+    "Audio streaming server",
+    "Primary monitoring dashboard (port 3838)",
+    "MongoDB database (port 27017)",
+    "Reverse proxy (ports 80/443 → 3838)"
+  ),
+  Status = c(rep("Running",15))
+)
+kable(svc_df, booktabs=TRUE, col.names=c("Service","Purpose","Status"),
+      caption="All Active Systemd Services") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=9) %>%
+  column_spec(1, bold=TRUE, width="5cm") %>%
+  column_spec(2, width="7.5cm") %>%
+  column_spec(3, width="2cm")
+```
+
+## Scheduled Timers
+
+```{r timers-table}
+timer_df <- data.frame(
+  Timer = c(
+    "fpren-weather-history.timer",
+    "fpren-comprehensive-2pm.timer",
+    "fpren-report.timer",
+    "fpren-census-refresh.timer",
+    "fpren-broadcast-generator.timer"
+  ),
+  Schedule = c(
+    "Every hour on the hour",
+    "Daily at 2:00 PM ET (18:00 UTC)",
+    "Daily at 6:00 AM ET",
+    "Monthly (1st of month)",
+    "Every 30 minutes"
+  ),
+  Purpose = c(
+    "Snapshot METAR obs → weather_history MongoDB",
+    "Comprehensive report: alerts + weather + all BCPs",
+    "Daily alert summary PDF + email",
+    "Refresh FL Census ACS data from api.census.gov",
+    "Generate AI broadcast scripts for all 9 zones"
+  )
+)
+kable(timer_df, booktabs=TRUE, col.names=c("Timer","Schedule","Purpose"),
+      caption="Scheduled Systemd Timers") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=9) %>%
+  column_spec(1, bold=TRUE, width="5.5cm") %>%
+  column_spec(2, width="3.5cm") %>%
+  column_spec(3, width="5.5cm")
+```
+
+\newpage
+
+# Data Ingestion Pipeline
+
+## Alert Ingestion
+
+The primary alert source is the NWS/IPAWS CAP feed (`api.weather.gov/alerts/active?area=FL`), polled every 2 minutes by `beacon-ipaws-fetcher`. Alerts are deduplicated by `alert_id` before insertion into MongoDB.
+
+A secondary county-level fetcher (`county_rss_fetcher.py`) fetches all 67 FL counties in parallel using NWS forecast zone codes (FLZ*), tagging each alert with `source:"county_nws:<county>"` for the County Alerts tab.
+
+```{r alert-severity}
+if (!is.null(m_alerts) && m_alerts$count() > 0) {
+  alerts_raw <- tryCatch(
+    m_alerts$find('{}', fields='{"severity":1,"event":1,"_id":0}'),
+    error=function(e) NULL
+  )
+  if (!is.null(alerts_raw) && nrow(alerts_raw) > 0 && "severity" %in% names(alerts_raw)) {
+    sev_counts <- table(alerts_raw$severity)
+    sev_df <- data.frame(Severity=names(sev_counts), Count=as.integer(sev_counts))
+    sev_df <- sev_df[order(-sev_df$Count),]
+    kable(sev_df, booktabs=TRUE, row.names=FALSE,
+          col.names=c("Severity","Count"),
+          caption="Current Alerts by Severity") %>%
+      kable_styling(latex_options=c("striped","hold_position"), font_size=10)
+  } else {
+    cat("No severity data available in current alert records.")
+  }
+} else {
+  cat("No alerts currently in database.")
+}
+```
+
+## Weather Observations
+
+`beacon-obs-fetcher` monitors **19 FL ASOS stations** every 15 minutes:
+
+`KGNV KOCF KPAK KJAX KTLH KPNS KECP KMCO KDAB KTPA KSRQ KLAL KRSW KFLL KMIA KPBI KEYW KSPG KAPF`
+
+The `fpren-weather-history.timer` snapshots current METAR observations hourly into the `weather_history` collection with 90-day rolling retention.
+
+## Traffic Data
+
+FL511 traffic incidents are fetched every 30 minutes by `beacon-extended-fetcher` and stored in `fl_traffic`. Currently **`r fmt_num(n_traffic)` incident records** are in the database.
+
+## Census Data
+
+All 67 Florida county demographics are loaded from the US Census Bureau ACS 5-Year API (`api.census.gov/data/2022/acs/acs5`) and refreshed monthly. Key variables include population, age 65+, poverty rate, limited English proficiency, and disability rate. A vulnerability score (0–1) is computed per county.
+
+```{r census-chart}
+if (!is.null(m_census) && m_census$count() > 0) {
+  census_raw <- tryCatch(
+    m_census$find('{}', fields='{"county":1,"vulnerability_score":1,"population_total":1,"_id":0}',
+                  sort='{"vulnerability_score":-1}', limit=15),
+    error=function(e) NULL
+  )
+  if (!is.null(census_raw) && nrow(census_raw) > 0) {
+    census_raw <- census_raw[order(census_raw$vulnerability_score),]
+    colors <- ifelse(census_raw$vulnerability_score >= 0.6, "#CC0000",
+              ifelse(census_raw$vulnerability_score >= 0.4, "#FF8800",
+              ifelse(census_raw$vulnerability_score >= 0.2, "#FFCC00", "#66BB66")))
+    par(mar=c(4,9,3,2))
+    bp <- barplot(census_raw$vulnerability_score, names.arg=census_raw$county,
+            horiz=TRUE, las=1, col=colors, border=NA,
+            main="Top 15 Most Vulnerable FL Counties", xlab="Vulnerability Score (0-1)",
+            cex.names=0.8, xlim=c(0,1))
+    abline(v=c(0.2,0.4,0.6), lty=2, col="gray70", lwd=0.8)
+  }
+}
+```
+
+\newpage
+
+# Broadcast System
+
+## Zone Coverage
+
+FPREN broadcasts to **9 regional zones** covering the entire state of Florida:
+
+```{r zones-table}
+zones_df <- data.frame(
+  Zone = c("all_florida","north_florida","central_florida","south_florida",
+           "tampa","miami","orlando","jacksonville","gainesville"),
+  Coverage = c(
+    "All Florida (catch-all)",
+    "Counties north of Marion",
+    "Marion → Palm Beach (Tampa, Daytona)",
+    "Palm Beach south",
+    "Hillsborough + Pinellas",
+    "Miami-Dade + Broward",
+    "Orange + Osceola + Seminole",
+    "Duval + Clay + St. Johns",
+    "Alachua County"
+  ),
+  `Mount Point` = c("/fpren","/north-florida","/central-florida","/south-florida",
+                    "/tampa","/miami","/orlando","/jacksonville","/gainesville"),
+  `Audio Files` = c(7,7,7,7,4,5,7,6,6)
+)
+kable(zones_df, booktabs=TRUE,
+      col.names=c("Zone ID","Coverage","Icecast Mount","Audio Files"),
+      caption="9 FPREN Broadcast Zones — All Streaming on Port 8000") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=9) %>%
+  column_spec(1, bold=TRUE, width="3.5cm") %>%
+  column_spec(2, width="5cm")
+```
+
+All 9 streams have been live and uninterrupted since **April 1, 2026 6:28 PM ET**. Peak listener count on the `/fpren` (All Florida) main stream: **1**.
+
+## Text-to-Speech Stack
+
+```{r tts-table}
+tts_df <- data.frame(
+  Engine = c("Piper TTS", "ElevenLabs", "gTTS"),
+  Trigger = c("All regular alerts and observations", "Critical alerts only (tornado, hurricane warnings)", "Removed"),
+  Notes = c(
+    "Local binary, no API cost. Voice: en_US-amy-medium.onnx. Installed system-wide.",
+    "API-based, costs money. Gated to high-impact events only.",
+    "No longer used — replaced by Piper"
+  )
+)
+kable(tts_df, booktabs=TRUE, col.names=c("Engine","Trigger","Notes"),
+      caption="TTS Engine Stack") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=9) %>%
+  column_spec(1, bold=TRUE, width="2.5cm") %>%
+  column_spec(2, width="4.5cm") %>%
+  column_spec(3, width="6.5cm")
+```
+
+## Zone Alert Audio Pipeline
+
+\begin{enumerate}
+  \item \texttt{beacon-ipaws-fetcher} polls NWS API every 2 minutes → inserts new alerts to MongoDB \texttt{nws\_alerts}
+  \item \texttt{zone-alert-tts} reads unprocessed alerts → determines applicable zones by county FIPS matching
+  \item \texttt{ai\_classifier.py} classifies severity and rewrites alert text via UF LiteLLM (validate→retry→fallback)
+  \item Piper TTS (or ElevenLabs for critical) generates MP3 → saved to \texttt{audio/zones/<zone\_id>/}
+  \item Tracking record written to \texttt{zone\_alert\_wavs} MongoDB collection
+  \item \texttt{beacon-station-engine} / \texttt{interrupt\_engine} picks up new files and queues for broadcast
+  \item \texttt{fpren-multi-zone-streamer} feeds each zone's audio to its Icecast mount via FFmpeg
+\end{enumerate}
+
+Total audio files generated to date: **`r fmt_num(n_wavs)`**
+
+## AI Broadcast Scripts
+
+`fpren-broadcast-generator` runs every 30 minutes and generates on-air broadcast copy from current alert data using the UF LiteLLM API (`llama-3.3-70b-instruct`). Scripts are rendered to MP3 via Piper and injected into each zone's playlist.
+
+## Content Library
+
+Uploaded broadcast content is organized into five categories at `weather_station/audio/content/`:
+
+| Folder | Purpose |
+|--------|---------|
+| `top_of_hour/` | Top-of-hour IDs and news breaks |
+| `imaging/` | Jingles, sweepers, station IDs |
+| `music/` | Background and fill music |
+| `educational/` | Weather education segments |
+| `weather_report/` | Pre-recorded weather segments |
+
+Content is uploaded via the Flask admin dashboard or Shiny upload tab.
+
+\newpage
+
+# Shiny Monitoring Dashboard
+
+## Overview
+
+The Shiny dashboard (`shiny_dashboard/app.R`) is the primary operator interface for FPREN. It provides real-time monitoring of all system components, alert management, report generation, and administrative functions.
+
+**Access:** `http://128.227.67.234:3838` (direct) | `https://128.227.67.234` (via Nginx, ports pending UF IT)
+**Deploy path:** `/srv/shiny-server/fpren/app.R`
+
+## Dashboard Tabs
+
+```{r tabs-table}
+tabs_df <- data.frame(
+  `#` = 1:14,
+  Tab = c("Overview","Weather Conditions","FL Alerts","Traffic Alerts","Traffic Analysis",
+          "County Alerts","Airport Delays","Upload Content","Reports",
+          "Station Health","Icecast Streams","Feed Status","Zones","Config"),
+  Description = c(
+    "Value boxes + active alerts summary + station status",
+    "METAR obs for 16 FL cities with 7-day NWS forecast hover + radar",
+    "All active NWS/IPAWS alerts with severity/source filters",
+    "FL511 traffic incidents with county/severity/type filters",
+    "Interactive statistical analysis — hotspot charts, county map, CSV export",
+    "ZIP/county search for per-county alerts + PDF/email export",
+    "FAA delay status merged with METAR obs for FL airports",
+    "Upload MP3/WAV to broadcast content folders",
+    "Generate + email PDF reports: county alerts, weather trends, BCP",
+    "Recent audio files + system/MongoDB health info",
+    "Live mount status — listeners, uptime, stream URLs (9 zones)",
+    "RSS/IPAWS feed health table",
+    "Per-zone playlist config with drag-to-reorder priority",
+    "SMTP settings + user management + user assets"
+  )
+)
+kable(tabs_df, booktabs=TRUE, col.names=c("#","Tab","Description"),
+      caption="Shiny Dashboard Tab Reference") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=9) %>%
+  column_spec(1, width="0.5cm") %>%
+  column_spec(2, bold=TRUE, width="3.5cm") %>%
+  column_spec(3, width="9cm")
+```
+
+## Authentication and Security System
+
+The Shiny dashboard requires login before displaying any content. The authentication system was implemented April 2, 2026.
+
+```{r auth-table}
+auth_df <- data.frame(
+  Feature = c(
+    "Login gate",
+    "Account lockout",
+    "Inactivity timeout",
+    "First-login flow",
+    "Phone verification",
+    "Email verification",
+    "Forgot password",
+    "Audit logging",
+    "AUP disclaimer"
+  ),
+  Detail = c(
+    "Full-page login screen with UF/FPREN branding",
+    "3 failed attempts → 24-hour account lock",
+    "2-min idle warning / 3-min auto-logout via JS setInterval",
+    "Forced password change on first login (must_change_password flag)",
+    "6-digit SMS code via Twilio after first password change",
+    "6-digit code via SMTP after phone verification",
+    "Email-based 6-digit reset code (1-hour expiry)",
+    "Full audit trail in user_audit_log MongoDB collection",
+    "UF Acceptable Use Policy displayed verbatim on login screen"
+  )
+)
+kable(auth_df, booktabs=TRUE, col.names=c("Feature","Detail"),
+      caption="Shiny Authentication Features") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=9) %>%
+  column_spec(1, bold=TRUE, width="3.5cm") %>%
+  column_spec(2, width="10cm")
+```
+
+\newpage
+
+# Flask Admin Dashboard
+
+## Overview
+
+The Flask admin dashboard (`weather_rss/web/app.py`) runs on port 5000 and provides operator-level stream control, content management, user administration, and system configuration.
+
+## API Surface
+
+The Flask app exposes approximately 40 API routes organized into the following groups:
+
+```{r flask-routes-table}
+flask_df <- data.frame(
+  Group = c("Auth","Streams","Weather & Alerts","Playlist & Audio",
+            "Zones","AI","Reports","SMTP","User Management",
+            "User Assets","Census Data","Lookup"),
+  Routes = c("3","5","4","10","1","2","4","4","4","5","5","1"),
+  Notes = c(
+    "Login, logout, main SPA",
+    "Stream control, zone override, engine start/restart",
+    "Current obs, Icecast status, airport data",
+    "Playlist state, mute, slot assign, upload, transcode",
+    "Zone definitions",
+    "Alert rewrite and broadcast script generation",
+    "List, generate, download reports",
+    "Get/set/test SMTP config",
+    "List, add, delete, password (auth required)",
+    "CRUD assets, ZIP lookup, BCP generation (auth required)",
+    "67-county data, AI analysis, alert impact, refresh",
+    "ZIP → county/city/airport lookup"
+  )
+)
+kable(flask_df, booktabs=TRUE, col.names=c("Route Group","# Routes","Notes"),
+      caption="Flask API Route Groups") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=9) %>%
+  column_spec(1, bold=TRUE, width="3.5cm") %>%
+  column_spec(2, width="1.5cm") %>%
+  column_spec(3, width="9cm")
+```
+
+## Bidirectional Sync
+
+The Flask admin (`app.py`) and desktop Tkinter app (`fpren_desktop.py`) maintain synchronized active-tab state via MongoDB `dashboard_state` (singleton document). Three sync endpoints (`/api/sync`, `/api/state` GET/POST) enable real-time tab switching in both directions with a 5-second polling interval.
+
+\newpage
+
+# AI Integration
+
+## UF LiteLLM
+
+All AI functionality routes through the University of Florida's LiteLLM proxy:
+
+```{r ai-table}
+ai_df <- data.frame(
+  Item = c("Endpoint","Model","Key Location","Fallback"),
+  Value = c(
+    "https://api.ai.it.ufl.edu",
+    "llama-3.3-70b-instruct",
+    "UF_LITELLM_API_KEY in weather_station/config/.env",
+    "Rule-based processing (all AI calls fall back gracefully)"
+  )
+)
+kable(ai_df, booktabs=TRUE, col.names=c("Item","Value"),
+      caption="UF LiteLLM Configuration") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=10) %>%
+  column_spec(1, bold=TRUE, width="3cm") %>%
+  column_spec(2, width="11cm")
+```
+
+## AI Use Cases
+
+```{r ai-uses-table}
+aiuse_df <- data.frame(
+  `Use Case` = c(
+    "Alert severity classification",
+    "Alert text rewrite",
+    "Broadcast script generation",
+    "Census vulnerability analysis",
+    "Alert population impact assessment",
+    "BCP demographic recommendations"
+  ),
+  File = c(
+    "weather_station/services/ai_classifier.py",
+    "weather_station/services/ai_classifier.py",
+    "weather_station/services/broadcast_generator.py",
+    "weather_rss/census_ai_analyzer.py",
+    "weather_rss/census_ai_analyzer.py",
+    "weather_rss/census_ai_analyzer.py"
+  ),
+  Trigger = c(
+    "Every new alert (zone_alert_tts pipeline)",
+    "Every new alert (validate→retry→fallback)",
+    "Every 30 min (fpren-broadcast-generator timer)",
+    "On-demand via Shiny census tab",
+    "On-demand per active alert",
+    "On-demand per BCP report"
+  )
+)
+kable(aiuse_df, booktabs=TRUE, col.names=c("Use Case","File","Trigger"),
+      caption="AI Integration Points") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=9) %>%
+  column_spec(1, bold=TRUE, width="4cm") %>%
+  column_spec(2, width="6cm") %>%
+  column_spec(3, width="4cm")
+```
+
+\newpage
+
+# Business Continuity Plan System
+
+## Overview
+
+Implemented April 3, 2026. Each FPREN dashboard user can register physical assets/properties (radio stations, offices, equipment sites). The system automatically generates tailored Business Continuity Plans for each asset using live weather history, NWS alert history, FL511 traffic data, and airport METAR data.
+
+## User Assets Schema
+
+Each user's MongoDB document contains an `assets` array. Key fields:
+
+```
+asset_id          — UUID string (unique)
+asset_name        — Human-readable name
+address           — Full street address
+lat / lon         — GPS coordinates
+zip               — Florida ZIP code
+city              — Resolved city name
+nearest_airport_icao  — Nearest FL airport ICAO code
+nearest_airport_name  — Airport full name
+asset_type        — Category (Radio Station, Office, etc.)
+notes             — Free text
+created_at        — ISO 8601 timestamp
+```
+
+## BCP Report Sections
+
+Each generated BCP PDF contains 10 sections:
+
+1. Cover Page (asset name, location, generation date)
+2. Executive Summary with risk scoring table
+3. Asset Location details
+4. Weather Risk analysis (30-day flight category chart)
+5. Alert History (NWS alerts affecting asset area)
+6. Traffic / Evacuation routes (FL511 data)
+7. Airport Status (METAR for nearest airport)
+8. **Population \& Vulnerability Analysis** (Census ACS data + LiteLLM narrative)
+9. Recommendations
+10. Recovery Timeline + Emergency Contacts
+
+## ZIP Code Lookup
+
+The system includes a ZIP → county/city/airport resolver covering all 67 Florida counties. Given a 5-digit FL ZIP, it returns:
+- County name and approximate lat/lon centroid
+- Nearest of 16 major FL airports (by Euclidean distance)
+- Airport ICAO code and full name
+
+## 2PM Comprehensive Report
+
+Daily at 2:00 PM ET, `fpren-comprehensive-2pm.timer` runs `reports/generate_comprehensive_2pm.R` which:
+
+1. Generates the daily alert summary PDF
+2. Generates weather trend PDFs for all 16 FL cities
+3. Generates a BCP PDF for every asset belonging to every registered user
+4. Emails a digest summary to configured addresses
+
+\newpage
+
+# Florida Census Data Integration
+
+## Data Source
+
+```{r census-source}
+census_df <- data.frame(
+  Item = c("API","URL","Year","Coverage","Refresh"),
+  Value = c(
+    "US Census Bureau ACS 5-Year Estimates",
+    "api.census.gov/data/2022/acs/acs5",
+    "2022 (most recent complete ACS 5-year)",
+    "All 67 Florida counties",
+    "Monthly (fpren-census-refresh.timer, fires May 1)"
+  )
+)
+kable(census_df, booktabs=TRUE, col.names=c("Item","Value"),
+      caption="Census Data Source") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=10) %>%
+  column_spec(1, bold=TRUE, width="3cm") %>%
+  column_spec(2, width="11cm")
+```
+
+## Vulnerability Scoring
+
+Each county receives a composite vulnerability score (0–1) computed from four dimensions:
+
+$$\text{Score} = \frac{\%65+}{30} \times 0.35 + \frac{\%\text{Poverty}}{25} \times 0.30 + \frac{\%\text{LEP}}{15} \times 0.15 + \frac{\%\text{Disability}}{20} \times 0.20$$
+
+Labels: **Low** (<0.2), **Moderate** (0.2–0.4), **High** (0.4–0.6), **Critical** (>0.6)
+
+```{r census-summary}
+if (!is.null(m_census) && m_census$count() > 0) {
+  c_data <- tryCatch(
+    m_census$find('{}', fields='{"county":1,"population_total":1,"vulnerability_score":1,"vulnerability_label":1,"pct_65plus":1,"pct_poverty":1,"_id":0}',
+                  sort='{"vulnerability_score":-1}', limit=10),
+    error=function(e) NULL
+  )
+  if (!is.null(c_data) && nrow(c_data) > 0) {
+    c_data$population_total <- formatC(c_data$population_total, format="d", big.mark=",")
+    c_data$vulnerability_score <- round(c_data$vulnerability_score, 3)
+    c_data$pct_65plus <- paste0(round(c_data$pct_65plus, 1), "%")
+    c_data$pct_poverty <- paste0(round(c_data$pct_poverty, 1), "%")
+    c_data$label <- ifelse(c_data$vulnerability_score >= 0.6, "Critical",
+                    ifelse(c_data$vulnerability_score >= 0.4, "High",
+                    ifelse(c_data$vulnerability_score >= 0.2, "Moderate", "Low")))
+    cols_use <- intersect(c("county","population_total","pct_65plus","pct_poverty","vulnerability_score","label"), names(c_data))
+    kable(c_data[, cols_use],
+          booktabs=TRUE, row.names=FALSE,
+          col.names=c("County","Population","65+ %","Poverty %","Vuln. Score","Label"),
+          caption="Top 10 Most Vulnerable FL Counties by Score") %>%
+      kable_styling(latex_options=c("striped","hold_position"), font_size=9)
+  }
+}
+```
+
+\newpage
+
+# MongoDB Collections
+
+## Collection Overview
+
+```{r mongo-table}
+mongo_df <- data.frame(
+  Collection = c("nws_alerts","zone_alert_wavs","zone_definitions","fl_traffic",
+                 "airport_metar","airport_delays","weather_history","users",
+                 "feed_status","dashboard_state","user_audit_log",
+                 "notification_config","fl_census"),
+  Records = c(
+    fmt_num(n_alerts), fmt_num(n_wavs), fmt_num(n_zones),
+    fmt_num(n_traffic), fmt_num(n_metar), "0 (FAA blocked)",
+    fmt_num(n_history), fmt_num(n_users), "—",
+    "1 (singleton)", fmt_num(n_audit), "1 (singleton)", fmt_num(n_census)
+  ),
+  Purpose = c(
+    "All active NWS/IPAWS alerts",
+    "Audio file tracking records per zone",
+    "9 zone configs (counties + cleanup rules)",
+    "FL511 traffic incidents statewide",
+    "Current METAR obs for 19 FL ASOS stations",
+    "FAA airport delay status (empty — API blocked)",
+    "Hourly METAR snapshots (90-day rolling retention)",
+    "Dashboard user accounts (bcrypt + verification fields)",
+    "RSS feed health status",
+    "Shared active-tab state (web ↔ desktop sync)",
+    "Auth audit trail (login, lockout, add/delete user)",
+    "Notification email addresses",
+    "FL county ACS census demographics + vulnerability scores"
+  )
+)
+kable(mongo_df, booktabs=TRUE, col.names=c("Collection","Records","Purpose"),
+      caption="MongoDB Collections (database: weather\\_rss)") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=9) %>%
+  column_spec(1, bold=TRUE, width="4cm") %>%
+  column_spec(2, width="2.5cm") %>%
+  column_spec(3, width="7cm")
+```
+
+\newpage
+
+# Report Generation System
+
+## Available Reports
+
+```{r reports-table}
+rep_df <- data.frame(
+  Template = c(
+    "county_alerts_report.Rmd",
+    "weather_trends_report.Rmd",
+    "business_continuity_report.Rmd",
+    "generate_comprehensive_2pm.R"
+  ),
+  Output = c(
+    "County Alerts PDF",
+    "Weather Trends PDF",
+    "Business Continuity Plan PDF",
+    "Full daily digest (all above)"
+  ),
+  Trigger = c(
+    "On-demand from Shiny County Alerts tab",
+    "On-demand from Shiny Reports tab",
+    "On-demand from Shiny Reports tab or 2PM timer",
+    "Daily at 2:00 PM ET via systemd timer"
+  ),
+  Parameters = c(
+    "county_name, date, mongo_uri",
+    "icao, city_name, start_date, end_date, mongo_uri",
+    "username, asset_name, address, lat, lon, zip, city, nearest_airport_icao, asset_type, mongo_uri, days_back",
+    "None (queries all users/assets from MongoDB)"
+  )
+)
+kable(rep_df, booktabs=TRUE, col.names=c("Template","Output","Trigger","Parameters"),
+      caption="R Markdown Report Templates") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=8) %>%
+  column_spec(1, bold=TRUE, width="4cm") %>%
+  column_spec(2, width="2.5cm") %>%
+  column_spec(3, width="3.5cm") %>%
+  column_spec(4, width="4cm")
+```
+
+All report PDFs are stored in `reports/output/` and can be downloaded from the Shiny dashboard or Flask admin.
+
+\newpage
+
+# Pending Items and Known Issues
+
+## Active Issues
+
+```{r issues-table}
+issues_df <- data.frame(
+  Priority = c("High","High","Medium","Low"),
+  Issue = c(
+    "Ports 80/443 not open externally",
+    "FAA API blocked by UF firewall",
+    "SSL certificate self-signed (browser warnings)",
+    "Shibboleth/GatorLink SSO not yet integrated"
+  ),
+  Status = c(
+    "Pending UF IT firewall approval (requested 2026-04-02)",
+    "Pending UF IT DNS/firewall resolution for soa.smext.faa.gov",
+    "Pending CA-signed cert from UF IT (requested 2026-04-02)",
+    "Roadmap created; Phase 1 pre-work can begin now"
+  ),
+  Impact = c(
+    "External users cannot access dashboard via port 80/443; port 3838 works",
+    "airport_delays MongoDB collection is empty; Airport tab shows no delays",
+    "Browsers show security warning on HTTPS access",
+    "UF staff must use separate FPREN credentials; no GatorLink SSO"
+  )
+)
+kable(issues_df, booktabs=TRUE, col.names=c("Priority","Issue","Status","Impact"),
+      caption="Open Issues") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=9) %>%
+  column_spec(1, bold=TRUE, width="1.5cm") %>%
+  column_spec(2, width="4cm") %>%
+  column_spec(3, width="4cm") %>%
+  column_spec(4, width="4cm")
+```
+
+## Shibboleth / GatorLink SSO Roadmap
+
+A full integration roadmap has been created to connect FPREN to UF's GatorLink SSO (Shibboleth SAML2). The integration will allow UF staff to log in with their existing GatorLink credentials.
+
+**Phase 1 (pre-work, no UF IT needed):**
+- Install `shibboleth-sp-utils` package on Ubuntu 24.04
+- Generate SP signing/encryption keys and SP metadata XML
+- Configure Nginx FastCGI blocks for Shibboleth
+- Build hybrid auth bridge in Shiny (GatorLink header → auto-login; no header → local form)
+- Build auto-provisioning in Flask for new GatorLink users
+
+**Phase 2 (requires UF IT Security meeting):**
+- Complete UF Risk Assessment (IRM team) — required before SP registration
+- Submit SP metadata to UF IAM registry
+- Request CA-signed SSL cert
+- Get ports 80/443 opened
+- Test against UF Beta IdP (`beta.login.ufl.edu`)
+
+**Key UF IdP details:**
+- EntityID: `https://login.ufl.edu/idp/shibboleth`
+- Metadata: `https://login.ufl.edu/login.ufl.edu.xml`
+- Required attributes: EPPN + mail + eduPersonAffiliation
+
+\newpage
+
+# Completed Feature History
+
+```{r history-table}
+hist_df <- data.frame(
+  Date = c(
+    "2026-03-29","2026-04-01","2026-04-01","2026-04-01",
+    "2026-04-02","2026-04-02",
+    "2026-04-03","2026-04-03","2026-04-03","2026-04-03","2026-04-03"
+  ),
+  Feature = c(
+    "Core system operational: NWS ingestion, 9-zone TTS, Icecast streams",
+    "AI classifier wired into zone_alert_tts pipeline",
+    "Flask dashboard tab loading fix + 10s fetch timeout",
+    "Desktop Tkinter app bidirectional tab sync",
+    "Shiny dashboard authentication gate (login, lockout, AUP)",
+    "Account lockout, inactivity timeout, SMS/email verification, audit log",
+    "User assets/properties system + BCP R Markdown reports",
+    "2PM comprehensive daily report scheduler (systemd timer)",
+    "7-day NWS forecast hover on weather city cards",
+    "Drag-to-reorder playlist priority (SortableJS)",
+    "FL Census data integration + LiteLLM AI vulnerability analysis"
+  )
+)
+kable(hist_df, booktabs=TRUE, col.names=c("Date","Feature Completed"),
+      caption="Feature Delivery History") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=9) %>%
+  column_spec(1, bold=TRUE, width="2.5cm") %>%
+  column_spec(2, width="11cm")
+```
+
+\newpage
+
+# System Health Snapshot
+
+```{r health-table}
+health_df <- data.frame(
+  Check = c(
+    "Server uptime",
+    "Disk usage (/)",
+    "Memory (used/total)",
+    "MongoDB status",
+    "Icecast streams",
+    "Nginx status",
+    "Shiny Server",
+    "Flask Admin",
+    "NTP sync",
+    "Census data loaded",
+    "Weather history active"
+  ),
+  Value = c(
+    "2 days 6 hours",
+    "23 GB used / 484 GB total (5%)",
+    "5.0 GB used / 15 GB total",
+    "Running — 13 collections",
+    "9/9 active since 2026-04-01",
+    "Running",
+    "Running",
+    "Running on port 5000",
+    "Synchronized (UF Stratum 2 NTP)",
+    "67 counties loaded",
+    "708 records (hourly snapshots)"
+  ),
+  Status = c(rep("OK",11))
+)
+kable(health_df, booktabs=TRUE, col.names=c("Health Check","Current Value","Status"),
+      caption="System Health Snapshot") %>%
+  kable_styling(latex_options=c("striped","hold_position"), font_size=9) %>%
+  column_spec(1, bold=TRUE, width="4cm") %>%
+  column_spec(2, width="7cm") %>%
+  column_spec(3, width="2cm")
+```
+
+---
+
+\vspace{1cm}
+\begin{center}
+\textcolor{FPREN_BLUE}{\rule{14cm}{0.4pt}}
+
+\textcolor{FPREN_BLUE}{\textbf{\large FPREN — Florida Public Radio Emergency Network}}
+
+\textcolor{gray}{Report generated: `r format(Sys.time(), "%B %d, %Y at %I:%M %p %Z")`}
+
+\textcolor{gray}{Server: 128.227.67.234 | Dashboard: http://128.227.67.234:3838 | Stream: http://128.227.67.234:8000/fpren}
+
+\textcolor{FPREN_BLUE}{\rule{14cm}{0.4pt}}
+\end{center}

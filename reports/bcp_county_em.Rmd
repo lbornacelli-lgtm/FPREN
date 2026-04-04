@@ -1,0 +1,531 @@
+---
+title: "Business Continuity Plan — County Emergency Management"
+subtitle: "`r params$asset_name`"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    fig_caption: true
+geometry: margin=1in
+fontsize: 11pt
+params:
+  username: "user"
+  asset_name: "County Emergency Operations Center"
+  address: "123 Main St, Gainesville, FL 32601"
+  lat: 29.65
+  lon: -82.33
+  zip: "32601"
+  city: "Gainesville"
+  nearest_airport_icao: "KGNV"
+  nearest_airport_name: "Gainesville Regional Airport"
+  asset_type: "Office"
+  notes: ""
+  mongo_uri: "mongodb://localhost:27017/"
+  days_back: 30
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE,
+                      fig.align="center", out.width="90%")
+suppressPackageStartupMessages({
+  library(mongolite); library(dplyr); library(ggplot2)
+  library(knitr); library(kableExtra); library(lubridate)
+})
+FPREN_BLUE <- "#003087"
+EM_GREEN   <- "#1a6b3a"
+start_date <- Sys.time() - days(params$days_back)
+mongo_uri  <- params$mongo_uri
+safe_mongo <- function(collection, db="weather_rss") {
+  tryCatch(mongo(collection=collection, db=db, url=mongo_uri), error=function(e) NULL)
+}
+```
+
+\definecolor{fprenblue}{HTML}{003087}
+\definecolor{emgreen}{HTML}{1a6b3a}
+
+\begin{center}
+\textcolor{fprenblue}{\rule{\linewidth}{2pt}}
+\vspace{4pt}
+{\Large\textbf{\textcolor{fprenblue}{FPREN --- Florida Public Radio Emergency Network}}}\\
+{\large\textbf{County Emergency Management Business Continuity Plan}}\\
+{\normalsize\textcolor{emgreen}{\textbf{`r params$city` County}}}\\
+\vspace{4pt}
+\textcolor{fprenblue}{\rule{\linewidth}{1pt}}
+\end{center}
+
+\vspace{6pt}
+
+```{r cover-table, results='asis'}
+cover <- data.frame(
+  Field = c("EOC / Facility","Asset Type","Address","Coordinates",
+            "County","Nearest Airport","Prepared By",
+            "Report Generated","Analysis Period"),
+  Value = c(params$asset_name, params$asset_type, params$address,
+            paste0(params$lat, " N, ", abs(params$lon), " W"),
+            params$city,
+            paste0(params$nearest_airport_icao, " -- ", params$nearest_airport_name),
+            params$username,
+            format(Sys.time(), "%Y-%m-%d %H:%M ET"),
+            paste0(params$days_back, " days")),
+  stringsAsFactors=FALSE
+)
+kable(cover, col.names=NULL, booktabs=TRUE, linesep="") %>%
+  kable_styling(latex_options="hold_position", full_width=FALSE) %>%
+  column_spec(1, bold=TRUE, color=FPREN_BLUE, width="6cm") %>%
+  column_spec(2, width="9cm")
+```
+
+> **Confidential** -- For authorized `r params$city` County Emergency Management personnel only.
+
+\newpage
+
+# Executive Summary
+
+```{r exec-summary}
+alerts_col    <- safe_mongo("nws_alerts")
+recent_alerts <- tryCatch({
+  if (is.null(alerts_col)) stop()
+  q <- sprintf('{"$or":[{"area_desc":{"$regex":"%s","$options":"i"}},{"counties":{"$regex":"%s","$options":"i"}}]}',
+               params$city, params$city)
+  r <- alerts_col$find(q, fields='{"event":1,"severity":1,"urgency":1,"sent":1,"expires":1,"_id":0}')
+  alerts_col$disconnect(); r
+}, error=function(e) { tryCatch(alerts_col$disconnect(), error=function(e2) NULL); data.frame() })
+
+n_alerts   <- nrow(recent_alerts)
+n_extreme  <- if (n_alerts > 0 && "severity" %in% names(recent_alerts))
+                sum(tolower(recent_alerts$severity) %in% c("extreme","severe"), na.rm=TRUE) else 0
+alert_risk <- if (n_extreme >= 3) "HIGH" else if (n_extreme >= 1 || n_alerts >= 5) "MODERATE" else "LOW"
+
+wx_col  <- safe_mongo("weather_history")
+wx_hist <- tryCatch({
+  if (is.null(wx_col)) stop()
+  r <- wx_col$find(
+    sprintf('{"icao":"%s","timestamp":{"$gte":"%s"}}', params$nearest_airport_icao,
+            format(start_date, "%Y-%m-%dT%H:%M:%SZ")),
+    fields='{"temp_f":1,"wind_speed":1,"flight_cat":1,"_id":0}')
+  wx_col$disconnect(); r
+}, error=function(e) { tryCatch(wx_col$disconnect(), error=function(e2) NULL); data.frame() })
+max_wind <- if (nrow(wx_hist) > 0 && "wind_speed" %in% names(wx_hist))
+              max(wx_hist$wind_speed, na.rm=TRUE) else NA_real_
+n_ifr    <- if (nrow(wx_hist) > 0 && "flight_cat" %in% names(wx_hist))
+              sum(wx_hist$flight_cat %in% c("IFR","LIFR"), na.rm=TRUE) else 0
+wx_risk  <- if (!is.na(max_wind) && (max_wind > 40 || n_ifr > 10)) "HIGH" else
+            if (!is.na(max_wind) && (max_wind > 25 || n_ifr > 3)) "MODERATE" else "LOW"
+
+traffic_col <- safe_mongo("fl_traffic")
+traffic_df  <- tryCatch({
+  if (is.null(traffic_col)) stop()
+  r <- traffic_col$find(
+    sprintf('{"county":{"$regex":"%s","$options":"i"}}', params$city),
+    fields='{"type":1,"severity":1,"is_full_closure":1,"road":1,"description":1,"_id":0}')
+  traffic_col$disconnect(); r
+}, error=function(e) { tryCatch(traffic_col$disconnect(), error=function(e2) NULL); data.frame() })
+n_closures   <- if (nrow(traffic_df) > 0 && "is_full_closure" %in% names(traffic_df))
+                  sum(traffic_df$is_full_closure==TRUE, na.rm=TRUE) else 0
+traffic_risk <- if (n_closures >= 2) "HIGH" else
+                if (n_closures >= 1 || nrow(traffic_df) > 5) "MODERATE" else "LOW"
+
+evac_col <- safe_mongo("fl_evacuation_zones")
+evac_zones_df <- tryCatch({
+  if (is.null(evac_col)) stop()
+  r <- evac_col$find(
+    sprintf('{"county":{"$regex":"^%s$","$options":"i"}}', params$city),
+    fields='{"zone":1,"zone_order":1,"description":1,"has_coastal":1,"_id":0}',
+    sort='{"zone_order":1}')
+  evac_col$disconnect(); r
+}, error=function(e) { tryCatch(evac_col$disconnect(), error=function(e2) NULL); data.frame() })
+highest_zone <- if (nrow(evac_zones_df) > 0) evac_zones_df$zone[1] else NA
+evac_risk    <- if (!is.na(highest_zone) && highest_zone == "A") "HIGH" else
+                if (!is.na(highest_zone) && highest_zone %in% c("B","C")) "MODERATE" else "LOW"
+
+routes_col <- safe_mongo("fl_evacuation_routes")
+evac_routes_df <- tryCatch({
+  if (is.null(routes_col)) stop()
+  r <- routes_col$find(
+    sprintf('{"county":{"$regex":"^%s$","$options":"i"}}', params$city),
+    fields='{"name":1,"road":1,"direction":1,"from_location":1,"to_location":1,"route_type":1,"serves_zones":1,"_id":0}',
+    sort='{"route_type":1}')
+  routes_col$disconnect(); r
+}, error=function(e) { tryCatch(routes_col$disconnect(), error=function(e2) NULL); data.frame() })
+n_evac_routes <- nrow(evac_routes_df)
+
+census_col <- safe_mongo("fl_census")
+census_rec <- tryCatch({
+  if (is.null(census_col)) stop()
+  r <- census_col$find(
+    sprintf('{"county":{"$regex":"^%s$","$options":"i"}}', params$city),
+    sort='{"year":-1}', limit=1,
+    fields='{"population_total":1,"pct_65plus":1,"pct_poverty":1,"pct_limited_english":1,"pct_disability":1,"vulnerability_score":1,"_id":0}')
+  census_col$disconnect()
+  if (nrow(r)==0) NULL else r[1,]
+}, error=function(e) { tryCatch(census_col$disconnect(), error=function(e2) NULL); NULL })
+
+pop_total <- if (!is.null(census_rec))
+               tryCatch(as.numeric(census_rec$population_total), error=function(e) NA) else NA
+
+overall_risks <- c(alert_risk, wx_risk, traffic_risk, evac_risk)
+overall_risk  <- if (any(overall_risks=="HIGH")) "HIGH" else
+                 if (any(overall_risks=="MODERATE")) "MODERATE" else "LOW"
+```
+
+This plan covers **`r params$city` County Emergency Management** operations. It integrates live NWS/IPAWS alerts, FL511 traffic, evacuation zone status, census vulnerability data, and FPREN broadcast coordination for emergency response and mass notification.
+
+```{r risk-table, results='asis'}
+risk_df <- data.frame(
+  Category = c("Weather / Meteorological","NWS Alert Activity",
+               "Transportation / Evacuation Routes","Hurricane Evacuation Zone","Overall Threat Level"),
+  Level    = c(wx_risk, alert_risk, traffic_risk, evac_risk, overall_risk),
+  Detail   = c(
+    if (!is.na(max_wind)) paste0("Max wind: ", round(max_wind,1), " mph; IFR hours: ", n_ifr)
+    else "No weather history",
+    paste0(n_alerts, " alerts; ", n_extreme, " Extreme/Severe"),
+    paste0(n_closures, " full closures; ", nrow(traffic_df), " incidents"),
+    if (!is.na(highest_zone))
+      paste0("Highest zone: ", highest_zone, "; ", n_evac_routes, " designated routes")
+    else "No evacuation zone data",
+    paste0(params$days_back, "-day combined assessment")
+  ),
+  stringsAsFactors=FALSE
+)
+kable(risk_df, col.names=c("Risk Category","Level","Detail"), booktabs=TRUE, linesep="") %>%
+  kable_styling(latex_options=c("hold_position","striped"), full_width=FALSE) %>%
+  column_spec(2, bold=TRUE,
+    color=ifelse(risk_df$Level=="HIGH","red",ifelse(risk_df$Level=="MODERATE","orange","#2e7d32")))
+```
+
+\newpage
+
+# County Population & Vulnerability
+
+```{r census-section, results='asis', fig.height=2.5}
+if (is.null(census_rec)) {
+  cat("> **No Census data** available. Run the census fetcher to populate fl_census collection.\n")
+} else {
+  safe_num <- function(x) { v <- tryCatch(as.numeric(x), error=function(e) NA); if(is.na(v)) 0 else v }
+  pop   <- safe_num(census_rec$population_total)
+  score <- safe_num(census_rec$vulnerability_score)
+  v_label <- if (score >= 0.7) "Critical" else if (score >= 0.5) "High" else
+             if (score >= 0.3) "Moderate" else "Low"
+  v_color <- if (score >= 0.7) "red" else if (score >= 0.5) "orange" else
+             if (score >= 0.3) "#0077aa" else "#2e7d32"
+
+  cen_df <- data.frame(
+    Metric = c("Total Population","Age 65+ (higher care needs)",
+               "Below Poverty Level (resource-limited)",
+               "Limited English Proficiency (translation needed)",
+               "With Disability (evacuation assistance needed)",
+               "Vulnerability Score"),
+    Value  = c(
+      format(pop, big.mark=","),
+      paste0(census_rec$pct_65plus, "%"),
+      paste0(census_rec$pct_poverty, "%"),
+      paste0(census_rec$pct_limited_english, "%"),
+      paste0(census_rec$pct_disability, "%"),
+      paste0(round(score, 3), " / 1.0 (", v_label, ")")
+    ),
+    stringsAsFactors=FALSE
+  )
+  print(
+    kable(cen_df, col.names=c("Demographic Indicator","Value"),
+          booktabs=TRUE, linesep="") %>%
+      kable_styling(latex_options=c("hold_position","striped"), full_width=FALSE) %>%
+      column_spec(1, bold=TRUE, color=FPREN_BLUE, width="9cm") %>%
+      column_spec(2, width="4cm") %>%
+      row_spec(nrow(cen_df), bold=TRUE, color=v_color)
+  )
+
+  vul_df <- data.frame(
+    Group = c("Age 65+","Under 18","Poverty","Lim. English","Disability"),
+    Pct   = c(safe_num(census_rec$pct_65plus), 0, safe_num(census_rec$pct_poverty),
+              safe_num(census_rec$pct_limited_english), safe_num(census_rec$pct_disability))
+  )
+  print(
+    ggplot(vul_df, aes(x=reorder(Group, Pct), y=Pct, fill=Group)) +
+      geom_col(width=0.6, show.legend=FALSE) +
+      scale_fill_brewer(palette="Set2") +
+      coord_flip() +
+      labs(title=paste0(params$city, " County — Vulnerable Population Groups (%)"),
+           x=NULL, y="% of Total Population") +
+      theme_minimal(base_size=10) +
+      theme(plot.title=element_text(color=FPREN_BLUE, face="bold", size=10))
+  )
+}
+```
+
+\newpage
+
+# Hurricane Evacuation Zones
+
+```{r evac-zones, results='asis'}
+if (nrow(evac_zones_df) == 0) {
+  cat("> **No evacuation zone data** found for", params$city, "County.\n")
+} else {
+  zone_disp <- evac_zones_df %>%
+    select(any_of(c("zone","description","has_coastal")))
+  if ("has_coastal" %in% names(zone_disp))
+    zone_disp$has_coastal <- ifelse(zone_disp$has_coastal==TRUE, "Yes", "No")
+  kable(zone_disp, booktabs=TRUE, linesep="", row.names=FALSE,
+        col.names=c("Zone","Description","Coastal Exposure")[seq_len(ncol(zone_disp))]) %>%
+    kable_styling(latex_options=c("hold_position","striped"), full_width=FALSE) %>%
+    column_spec(1, bold=TRUE, color=FPREN_BLUE, width="1.2cm") %>%
+    column_spec(2, width="11cm")
+}
+```
+
+## EOC Activation Thresholds by Hurricane Category
+
+```{r eoc-activation, results='asis'}
+eoc_df <- data.frame(
+  `Hurricane Category` = c("Tropical Storm","Category 1","Category 2","Category 3","Category 4-5"),
+  `Evacuation Zones`   = c("None required","Zone A (coastal)","Zones A-B","Zones A-C","Zones A-E"),
+  `EOC Level`          = c("Level 3 (Watch)","Level 2 (Warning)","Level 2","Level 1 (Full activation)","Level 1"),
+  `FPREN Action`       = c("Monitor alerts","Broadcast Zone A evac order","Broadcast A-B","All zone alerts","All zone alerts, ElevenLabs critical"),
+  stringsAsFactors=FALSE, check.names=FALSE
+)
+kable(eoc_df, booktabs=TRUE, linesep="") %>%
+  kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE) %>%
+  column_spec(1, bold=TRUE, width="3.5cm") %>%
+  column_spec(2, width="3.8cm") %>%
+  column_spec(3, width="3.5cm") %>%
+  column_spec(4, width="5cm")
+```
+
+\newpage
+
+# Designated Evacuation Routes
+
+```{r evac-routes, results='asis'}
+if (nrow(evac_routes_df) == 0) {
+  cat("> **No designated evacuation routes** found for", params$city, "County.\n")
+} else {
+  route_disp <- evac_routes_df %>%
+    select(any_of(c("name","road","direction","from_location","to_location","route_type","serves_zones")))
+  if ("serves_zones" %in% names(route_disp))
+    route_disp$serves_zones <- sapply(route_disp$serves_zones,
+      function(z) if (is.list(z)) paste(unlist(z), collapse=", ") else paste(z, collapse=", "))
+  all_col_names <- c(name="Route Name", road="Road", direction="Dir",
+                     from_location="From", to_location="To", route_type="Type", serves_zones="Zones")
+  use_names <- all_col_names[names(all_col_names) %in% names(route_disp)]
+  kable(route_disp, booktabs=TRUE, linesep="", row.names=FALSE, col.names=use_names) %>%
+    kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE) %>%
+    column_spec(1, bold=TRUE, width="4cm") %>%
+    column_spec(2, width="2cm")
+}
+```
+
+## Current Conditions on Evacuation Routes
+
+```{r evac-route-traffic, results='asis'}
+if (nrow(evac_routes_df) > 0 && nrow(traffic_df) > 0 && "road" %in% names(evac_routes_df)) {
+  road_pat <- paste(evac_routes_df$road, collapse="|")
+  on_route <- if (nchar(road_pat) > 0 && "road" %in% names(traffic_df))
+    traffic_df[grepl(road_pat, traffic_df$road, ignore.case=TRUE), ]
+  else data.frame()
+  if (nrow(on_route) > 0) {
+    cat("**WARNING: Active incidents on designated evacuation routes:**\n\n")
+    disp <- on_route %>% select(any_of(c("road","type","severity","is_full_closure","description")))
+    if ("description" %in% names(disp)) disp$description <- substr(disp$description, 1, 55)
+    print(kable(disp, booktabs=TRUE, linesep="") %>%
+      kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE))
+  } else {
+    cat("> No current FL511 incidents on designated evacuation routes.\n")
+  }
+} else {
+  cat("> No evacuation route traffic data available.\n")
+}
+```
+
+\newpage
+
+# Mass Notification & FPREN Coordination
+
+## Communication Systems
+
+```{r comms-table, results='asis'}
+comms_df <- data.frame(
+  System = c(
+    "FPREN (Florida Public Radio Emergency Network)",
+    "IPAWS / Wireless Emergency Alert (WEA)",
+    "CodeRED / AlertFlorida",
+    "EAS (Emergency Alert System)",
+    "Social Media (Twitter/X, Facebook)",
+    "Florida Division of EM State Watch"
+  ),
+  Coverage = c(
+    "All 9 FPREN zones; radio broadcast via Icecast on port 8000",
+    "Nationwide; cell broadcast to all phones in affected area",
+    paste0(params$city, " County registered residents"),
+    "All radio/TV stations in area; FCC mandatory relay",
+    "Broad public reach; no authentication required",
+    "24/7 coordination with county EM; WebEOC integration"
+  ),
+  `Activation Contact` = c(
+    "FPREN Admin: lawrence.bornace@ufl.edu",
+    "Florida SEOC: (850) 413-9969",
+    paste0(params$city, " County EM: (352) 264-6500"),
+    "Auto-relayed via EAS encoder (verify operational)",
+    "County PIO coordinates",
+    "1-800-342-3557 (FL SEOC 24/7)"
+  ),
+  `Pre-Event Check` = rep("[ ]", 6),
+  stringsAsFactors=FALSE, check.names=FALSE
+)
+kable(comms_df, booktabs=TRUE, linesep="",
+      col.names=c("System","Coverage","Activation Contact","Verified")) %>%
+  kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE) %>%
+  column_spec(1, bold=TRUE, width="4cm") %>%
+  column_spec(2, width="4.5cm") %>%
+  column_spec(3, width="4cm") %>%
+  column_spec(4, width="1.2cm")
+```
+
+## Special Needs Population Registry
+
+Based on Census data, `r params$city` County has populations requiring additional assistance:
+
+- Residents requiring evacuation assistance should be registered in the **Special Needs Registry** (FL Dept of Health)
+- FPREN broadcasts in English; coordinate with county for **Spanish/Creole language** supplemental alerts for LEP populations
+- Verify TTY/TDD and ADA-accessible shelter availability before issuing evacuation orders
+
+\newpage
+
+# Current NWS Alert Status
+
+```{r alerts-section, results='asis'}
+if (nrow(recent_alerts) == 0) {
+  cat("> **No NWS alerts** recorded for", params$city, "area during the selected period.\n")
+} else {
+  disp <- recent_alerts %>% select(any_of(c("event","severity","urgency","sent"))) %>% head(25)
+  if ("sent" %in% names(disp))
+    disp$sent <- tryCatch(format(as.POSIXct(disp$sent, tz="UTC"), "%Y-%m-%d %H:%M"), error=function(e) disp$sent)
+  kable(disp, booktabs=TRUE, linesep="") %>%
+    kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE)
+}
+```
+
+\newpage
+
+# EOC Decision Checklist
+
+```{r eoc-checklist, results='asis'}
+chk_df <- data.frame(
+  Phase = c(
+    rep("72 Hours Before Landfall", 4),
+    rep("48 Hours Before", 4),
+    rep("24 Hours Before", 4),
+    rep("At/After Landfall", 3)
+  ),
+  Action = c(
+    "Issue Tropical Storm Watch; brief EOC staff",
+    "Activate FPREN and all county notification systems",
+    "Open special needs shelter; begin registration intake",
+    "Coordinate mutual aid requests with neighboring counties",
+    "Issue Hurricane Watch/Warning for appropriate zones",
+    paste0("Order mandatory evacuation for Zone ", if (!is.na(highest_zone) && highest_zone=="A") "A" else "A (when applicable)"),
+    "Open general population shelters; verify capacity",
+    "Pre-position emergency equipment and fuel supplies",
+    "All evacuation orders issued; contraflow activated if authorized",
+    "EOC at full Level 1 activation; 24/7 staffing",
+    "Coordinate with FL National Guard and FEMA Region 4",
+    "Verify FPREN broadcasting shelter locations and evacuation routes",
+    "Assess damage reports; coordinate search and rescue",
+    "Reopen roads as cleared; manage re-entry by zone",
+    "Begin damage assessment and FEMA disaster declaration process"
+  ),
+  Done = rep("[ ]", 15),
+  stringsAsFactors=FALSE
+)
+kable(chk_df, booktabs=TRUE, linesep="", col.names=c("Phase","Action Item","Done")) %>%
+  kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE) %>%
+  column_spec(1, bold=TRUE, color=FPREN_BLUE, width="4cm") %>%
+  column_spec(2, width="10cm") %>%
+  column_spec(3, width="0.8cm")
+```
+
+\newpage
+
+# Recovery & Continuity Timeline
+
+```{r recovery-timeline, results='asis'}
+timeline <- data.frame(
+  Phase  = c(rep("Immediate (0-24 h)", 4), rep("Short-term (1-7 d)", 4),
+             rep("Medium-term (1-4 wk)", 3), rep("Long-term (1-6 mo)", 2)),
+  Action = c(
+    "Confirm EOC staff safety; full accountability",
+    "Begin damage assessment with GIS/field teams",
+    "Coordinate with state FDEM for resource requests",
+    "Maintain 24/7 public information via FPREN and notifications",
+    "Open Disaster Recovery Centers for residents",
+    "Manage mutual aid teams arriving from other counties",
+    "Submit Preliminary Damage Assessment (PDA) to FEMA",
+    "Re-entry operations: staged by zone, critical workers first",
+    "Transition from response to recovery operations",
+    "Apply for FEMA Public Assistance for infrastructure repair",
+    "Debrief EOC staff; document lessons learned",
+    "Update County Comprehensive Emergency Management Plan (CEMP)",
+    "Conduct after-action review with all partner agencies"
+  ),
+  Owner  = c("EM Director","Field Teams","EM Director","PIO",
+             "Human Services","Logistics","EM Director","EM Director",
+             "EM Director","Finance","All Staff","EM Director","All Agencies"),
+  Done   = rep("[ ]", 13),
+  stringsAsFactors=FALSE
+)
+kable(timeline, booktabs=TRUE, linesep="", col.names=c("Phase","Action","Owner","Done")) %>%
+  kable_styling(latex_options=c("hold_position","striped","scale_down"), full_width=FALSE) %>%
+  column_spec(1, width="3.2cm", bold=TRUE, color=FPREN_BLUE) %>%
+  column_spec(2, width="8cm") %>%
+  column_spec(3, width="2.5cm") %>%
+  column_spec(4, width="0.8cm")
+```
+
+\newpage
+
+# Emergency Contacts
+
+```{r contacts, results='asis'}
+contacts <- data.frame(
+  Role = c(
+    paste0(params$city, " County Emergency Management"),
+    "FL Division of Emergency Management (FDEM)",
+    "FL State Emergency Operations Center (24/7)",
+    "FEMA Region 4 (Atlanta)",
+    "National Hurricane Center",
+    "NWS Jacksonville (FL alerts)",
+    "FL National Guard Joint Operations Center",
+    "FPREN Administrator",
+    "American Red Cross FL Region",
+    "FL 211 (social services)"
+  ),
+  Contact = c(
+    "(352) 264-6500 -- alachuacounty.us/em",
+    "(850) 413-9969 -- floridadisaster.org",
+    "1-800-342-3557 (24/7)",
+    "(770) 220-5200",
+    "(305) 229-4470 -- nhc.noaa.gov",
+    "(904) 741-4311 -- weather.gov/jax",
+    "(904) 823-0550",
+    "lawrence.bornace@ufl.edu",
+    "1-800-733-2767 -- redcross.org",
+    "Dial 2-1-1"
+  ),
+  stringsAsFactors=FALSE
+)
+kable(contacts, col.names=c("Role / Organization","Contact"),
+      booktabs=TRUE, linesep="") %>%
+  kable_styling(latex_options=c("hold_position","striped"), full_width=FALSE) %>%
+  column_spec(1, bold=TRUE, color=FPREN_BLUE, width="6.5cm") %>%
+  column_spec(2, width="8.5cm")
+```
+
+\vspace{16pt}
+\begin{center}
+\textcolor{fprenblue}{\rule{\linewidth}{1pt}}\\
+\vspace{4pt}
+{\small\textit{Generated by FPREN Automated Reporting -- `r format(Sys.time(), "%Y-%m-%d %H:%M ET")`}}\\
+{\small\textit{County: `r params$city` | Prepared by: `r params$username`}}\\
+{\small Florida Public Radio Emergency Network --- University of Florida}
+\end{center}

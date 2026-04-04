@@ -1,0 +1,17 @@
+[Unit]
+Description=FPREN Waze for Cities Traffic Data Fetcher (continuous loop)
+After=network.target mongod.service
+
+[Service]
+Type=simple
+User=ufuser
+WorkingDirectory=/home/ufuser/Fpren-main
+ExecStart=/home/ufuser/Fpren-main/venv/bin/python3 /home/ufuser/Fpren-main/weather_rss/waze_fetcher.py --loop
+Restart=on-failure
+RestartSec=30
+Environment=MONGO_URI=mongodb://localhost:27017/
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

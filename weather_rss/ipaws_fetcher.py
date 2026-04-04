@@ -127,6 +127,15 @@ def fetch_and_store(col, since_dt: datetime) -> int:
         if not is_florida(alert_elem):
             continue
 
+        # Skip IPAWS test messages
+        status   = _text(alert_elem, "status")
+        msg_type = _text(alert_elem, "msgType")
+        headline = _info_text(alert_elem, "headline")
+        if status.lower() in ("test", "draft") or msg_type.lower() == "test":
+            continue
+        if headline.upper().startswith("TEST "):
+            continue
+
         data = parse_alert(alert_elem)
         if not data["alert_id"]:
             continue

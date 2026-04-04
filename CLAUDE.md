@@ -78,6 +78,8 @@ Fpren-main/
 | `zone_alert_wavs` | Tracking records for generated audio files |
 | `zone_definitions` | 9 zone configs (county lists + cleanup rules) |
 | `fl_traffic` | FL511 traffic incidents |
+| `waze_alerts` | Waze CCP point incidents (accidents, hazards, closures) with GeoJSON Point |
+| `waze_jams` | Waze CCP polyline jams with GeoJSON LineString + centroid Point |
 | `airport_metar` | Current METAR obs for 19 FL ASOS stations (updated every 15 min) |
 | `airport_delays` | FAA airport delay status |
 | `weather_history` | Hourly METAR snapshots for 16 FL cities — temp, wind, humidity, flight cat (90-day retention) |
@@ -279,6 +281,115 @@ Added `send_html_email(subject, body_html, to=None)` to `weather_rss/email_utils
 
 ---
 
+## Business Continuity Plan (BCP) System (added 2026-04-03)
+
+### User Assets / Properties
+Each MongoDB `users` document now supports an optional `assets` array:
+```json
+{
+  "assets": [{
+    "asset_id": "uuid-string",
+    "asset_name": "WUFT Studio B",
+    "address": "1600 SW 23rd Dr, Gainesville, FL 32608",
+    "lat": 29.6516,
+    "lon": -82.3248,
+    "zip": "32608",
+    "city": "Gainesville",
+    "nearest_airport_icao": "KGNV",
+    "nearest_airport_name": "Gainesville Regional Airport",
+    "asset_type": "Radio Station",
+    "notes": "",
+    "created_at": "2026-04-03T14:00:00Z"
+  }]
+}
+```
+
+### Flask API Routes Added (`weather_rss/web/app.py`)
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET    | `/api/users/<username>/assets` | List user's assets |
+| POST   | `/api/users/<username>/assets` | Add asset to user |
+| PUT    | `/api/users/<username>/assets/<asset_id>` | Update asset |
+| DELETE | `/api/users/<username>/assets/<asset_id>` | Remove asset |
+| GET    | `/api/lookup/city-by-zip?zip=XXXXX` | ZIP → county, city, lat/lon, nearest airport ICAO |
+| POST   | `/api/reports/generate-bcp` | Generate BCP PDF for a user asset |
+
+### BCP R Markdown Template
+- **File:** `reports/business_continuity_report.Rmd`
+- **Parameters:** username, asset_name, address, lat, lon, zip, city, nearest_airport_icao, nearest_airport_name, asset_type, notes, mongo_uri, days_back
+- **Sections:** Cover page, Executive Summary (risk table), Asset Location, Weather Risk (flight category chart), Alert History, Traffic/Evacuation, Airport Status, Recommendations, Recovery Timeline, Emergency Contacts
+
+### 2PM Comprehensive Report (systemd timer)
+- **Script:** `reports/generate_comprehensive_2pm.R`
+- **Generates:** Alert summary + weather trends for all 16 cities + BCP for all user assets
+- **Timer:** `systemd/fpren-comprehensive-2pm.timer` (runs daily at 14:00 ET)
+- **Service:** `systemd/fpren-comprehensive-2pm.service`
+- **Install:** `sudo bash systemd/install_2pm_timer.sh`
+
+### Shiny Dashboard Updates (2026-04-03)
+- **Reports tab:** New "Business Continuity Plans" section — user+asset selector, BCP generation, recent BCP list
+- **Config tab:** New "User Assets / Properties" panel — view/add/delete assets per user with ZIP→city/airport lookup
+- **Weather cards:** 7-day NWS forecast hover popup on each city card (JS + NWS API, 300ms delay, cached)
+- **Playlist:** Drag-to-reorder priority ordering (SortableJS CDN) + priority saved to `zone_definitions.normal_mode_types`
+- **Emails:** Polished HTML invite email; `send_fpren_email()` accepts optional `attachment_path`
+
+---
+
+## Waze for Cities Integration (added 2026-04-03)
+
+### Overview
+Pulls real-time traffic alerts, jams, and irregularities from the Waze Connected Citizens Program (CCP) JSON feed every 2 minutes and stores them in MongoDB with 2dsphere geospatial indexes so RStudio can run distance calculations against asset locations.
+
+### Feed URL Configuration
+Set one of:
+- Env var: `WAZE_FEED_URL`
+- Config file: `weather_rss/config/waze_config.json` → `{ "feed_url": "https://www.waze.com/row-partnerhub-api/partners/NNNNN/waze-feeds/TOKEN?format=1" }`
+
+### Files Added
+| File | Purpose |
+|------|---------|
+| `weather_rss/waze_fetcher.py` | CCP feed fetch + MongoDB upsert (--loop, --dry-run, --verbose) |
+| `weather_rss/config/waze_config.json` | Feed URL config stub |
+| `systemd/beacon-waze-fetcher.service` | Continuous loop service (2-min poll) |
+| `scripts/waze_distance_helpers.R` | RStudio helper: distance queries + sf spatial objects |
+
+### MongoDB Collections
+| Collection | Key fields |
+|------------|-----------|
+| `waze_alerts` | `uuid`, `type`, `subtype`, `street`, `city`, `reliability`, `confidence`, `location` (GeoJSON Point), `lat`, `lon`, `pub_millis`, `fetched_at` |
+| `waze_jams` | `uuid`, `street`, `city`, `speed_kmh`, `delay_sec`, `length_m`, `level` (0–5), `line` (GeoJSON LineString), `location` (centroid Point), `lat`, `lon`, `pub_millis`, `fetched_at` |
+
+Indexes: `uuid` unique, `location` 2dsphere, `type`/`level`/`pub_millis`/`city`
+
+### Flask API Routes
+| Route | Description |
+|-------|-------------|
+| `GET /api/waze/alerts?type=&city=&hours=2&limit=500` | Recent alerts with optional filters |
+| `GET /api/waze/jams?city=&min_level=&hours=2&limit=300` | Recent jams with optional filters |
+| `GET /api/waze/nearby?lat=&lon=&radius_m=10000&hours=2` | Alerts + jams within radius via $nearSphere |
+| `GET /api/waze/status` | Alert/jam counts + freshness timestamps |
+| `POST /api/waze/refresh` | Trigger on-demand fetch (admin only) |
+
+### RStudio Usage
+```r
+source("scripts/waze_distance_helpers.R")
+asset <- c(lon = -82.3248, lat = 29.6516)  # WUFT Gainesville
+
+waze_alerts_near(asset, radius_km = 10)
+waze_jams_near(asset, radius_km = 15, min_level = 2)
+waze_summary_near(asset, radius_km = 20)   # for BCP reports
+```
+
+### Systemd Setup
+```bash
+sudo cp systemd/beacon-waze-fetcher.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now beacon-waze-fetcher
+sudo journalctl -u beacon-waze-fetcher -f
+```
+
+---
+
 ## Known Issues / TODO
 
 - [ ] Port 80/443 and zone stream mounts pending UF IT firewall approval
@@ -288,6 +399,81 @@ Added `send_html_email(subject, body_html, to=None)` to `weather_rss/email_utils
 - [x] Desktop app (`weather_rss/web/fpren_desktop.py`) tab sync (commit 5d2db81)
 - [x] Add authentication gate to Shiny dashboard (2026-04-02)
 - [x] Add account lockout, inactivity timeout, first-login flow, SMS/email verification to Shiny (2026-04-02)
+- [x] User assets/properties system + BCP reports (2026-04-03)
+- [x] 2PM comprehensive daily report scheduler (2026-04-03)
+- [x] 7-day forecast hover on weather city cards (2026-04-03)
+- [x] Drag-to-reorder playlist priority (2026-04-03)
+- [x] FL Census data integration + LiteLLM AI analysis (2026-04-03)
+- [x] Waze for Cities CCP feed integration + RStudio distance helpers (2026-04-03)
+
+---
+
+## Florida Census Data Integration (added 2026-04-03)
+
+### Data Source
+- **API:** US Census Bureau ACS 5-Year Estimates (`api.census.gov/data/2022/acs/acs5`)
+- **Coverage:** All 67 Florida counties
+- **Variables:** Population, age 65+, under-18, poverty, limited English, disability, housing, median income
+- **Key:** `weather_rss/config/census_config.json` → `{ "api_key": "..." }` (or `CENSUS_API_KEY` env var)
+
+### MongoDB Collection: `fl_census`
+Key fields: `county`, `fips_county`, `year`, `population_total`, `pct_65plus`, `pct_poverty`, `pct_limited_english`, `pct_disability`, `vulnerability_score` (0–1), `vulnerability_label` (Low/Moderate/High/Critical)
+
+**Index:** `{ county: 1, year: -1 }` (unique)
+
+### Files Added
+| File | Purpose |
+|------|---------|
+| `weather_rss/fl_census_fetcher.py` | Pulls ACS data, computes vulnerability scores, upserts to MongoDB |
+| `weather_rss/census_ai_analyzer.py` | LiteLLM-powered vulnerability/impact/BCP analysis via `ai_client.chat()` |
+| `weather_rss/config/census_config.json` | Census API key storage |
+| `systemd/beacon-census-fetcher.service` | oneshot service for on-demand fetch |
+| `systemd/fpren-census-refresh.timer` | Monthly refresh timer |
+| `systemd/install_census.sh` | First-time install script |
+
+### Flask API Routes Added (`weather_rss/web/app.py`)
+| Route | Description |
+|-------|-------------|
+| `GET /api/census/counties` | All 67 counties sorted by vulnerability score |
+| `GET /api/census/county/<name>` | Single county full record |
+| `GET /api/census/analysis/<name>?mode=vulnerability\|impact\|bcp&asset=<name>` | LiteLLM AI analysis |
+| `GET /api/census/impact/<alert_id>` | Census-enriched alert with AI population impact |
+| `POST /api/census/refresh` | Admin-only: trigger live Census API fetch |
+
+### Shiny Dashboard
+- New **Census & Demographics** tab (viewer role, sidebar menu)
+- Value boxes: FL total population, avg % 65+, avg % poverty, high-vulnerability county count
+- County selector with demographic detail panel + vulnerability bar chart
+- AI analysis button → LiteLLM vulnerability narrative
+- Active alert impact panel → population at risk + AI assessment
+- Full 67-county DT table sorted by vulnerability score
+
+### LiteLLM Integration
+`census_ai_analyzer.py` uses `weather_station.services.ai_client.chat()` with three modes:
+1. **`analyze_county_vulnerability(county)`** — demographic vulnerability narrative
+2. **`analyze_alert_impact(county, alerts, census)`** — population impact of active alerts
+3. **`analyze_bcp_demographics(county, asset_name)`** — BCP-specific recommendations
+
+All three fall back to rule-based summaries if `UF_LITELLM_API_KEY` is not set or AI call fails.
+
+### BCP Report Enhancement
+`reports/business_continuity_report.Rmd` now includes a **Population & Vulnerability Analysis** section:
+- Census stats table (population, elderly %, poverty %, LEP %, disability %, income, housing)
+- Vulnerability bar chart (5 population groups)
+- AI-generated demographic narrative (calls `census_ai_analyzer.py` via Python subprocess)
+
+### Setup
+```bash
+# 1. Add your Census API key
+nano weather_rss/config/census_config.json
+
+# 2. Run install script (seeds DB + enables monthly timer)
+sudo bash systemd/install_census.sh
+
+# 3. Verify data loaded
+mongosh weather_rss --eval "db.fl_census.countDocuments()"
+# Should return 67
+```
 
 ---
 

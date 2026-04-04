@@ -1,0 +1,11 @@
+[Unit]
+Description=FPREN Evacuation Data Refresh — weekly on Sunday at 7:00 AM UTC (3 AM ET)
+Requires=beacon-evacuation-fetcher.service
+
+[Timer]
+OnCalendar=Sun *-*-* 07:00:00
+Persistent=true
+Unit=beacon-evacuation-fetcher.service
+
+[Install]
+WantedBy=timers.target

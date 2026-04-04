@@ -116,10 +116,45 @@ def classify_alert(alert: dict) -> str:
         return baseline
 
 
+def _validate_rewrite(text: str, alert: dict) -> tuple[bool, str]:
+    """
+    Validate that LLM-rewritten broadcast text is safe to air.
+
+    Checks:
+    - Not empty or whitespace-only
+    - Word count is reasonable (5–100 words)
+    - Does not contain the literal word "Error" or truncation markers
+    - Contains the event type keyword (guards against hallucinated topic drift)
+
+    Returns (is_valid, reason_if_invalid).
+    """
+    if not text or not text.strip():
+        return False, "empty output"
+
+    words = text.split()
+    if len(words) < 5:
+        return False, f"too short ({len(words)} words)"
+    if len(words) > 100:
+        return False, f"too long ({len(words)} words)"
+
+    lower = text.lower()
+    if "error" in lower or "[truncated]" in lower or "..." in text:
+        return False, "contains truncation or error marker"
+
+    # The event name should appear somewhere in the output (loose check —
+    # just first keyword, e.g. "tornado" from "Tornado Warning").
+    event_keyword = (alert.get("event") or "").lower().split()[0] if alert.get("event") else ""
+    if event_keyword and len(event_keyword) > 3 and event_keyword not in lower:
+        return False, f"missing event keyword '{event_keyword}'"
+
+    return True, ""
+
+
 def rewrite_alert(alert: dict) -> str:
     """
     Rewrite alert text into broadcast-ready radio copy using AI.
-    Falls back to original _build_nws_text() style if AI unavailable.
+    Validates the LLM output and retries once before falling back.
+    Falls back to rule-based text if AI is unavailable or both attempts fail.
     """
     if not is_configured():
         return _fallback_text(alert)
@@ -136,13 +171,30 @@ def rewrite_alert(alert: dict) -> str:
         f"Details: {desc}"
     )
 
-    try:
-        result = chat(prompt, system=_REWRITE_SYSTEM, max_tokens=120)
-        logger.info("AI rewrote alert: %s", event)
-        return result
-    except Exception as e:
-        logger.warning("AI rewrite failed: %s — using fallback", e)
-        return _fallback_text(alert)
+    for attempt in range(2):
+        try:
+            result = chat(prompt, system=_REWRITE_SYSTEM, max_tokens=120)
+            valid, reason = _validate_rewrite(result, alert)
+            if valid:
+                if attempt > 0:
+                    logger.info("AI rewrite succeeded on retry for: %s", event)
+                else:
+                    logger.info("AI rewrote alert: %s", event)
+                return result
+            else:
+                logger.warning(
+                    "AI rewrite validation failed (attempt %d/2) for '%s': %s — %s",
+                    attempt + 1, event, reason,
+                    "retrying" if attempt == 0 else "using fallback",
+                )
+        except Exception as e:
+            logger.warning(
+                "AI rewrite error (attempt %d/2) for '%s': %s — %s",
+                attempt + 1, event, e,
+                "retrying" if attempt == 0 else "using fallback",
+            )
+
+    return _fallback_text(alert)
 
 
 def _fallback_text(alert: dict) -> str:

@@ -14,6 +14,7 @@ NOTE: NWS issues most FL alerts against forecast zones (FLZ prefix), not
 county FIPS codes (FLC prefix). Using FLC codes returns empty results.
 """
 import logging, os, urllib3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import requests
 from pymongo import MongoClient
@@ -145,11 +146,33 @@ def _fetch_county(county, zones):
     return docs
 
 
+FETCH_WORKERS = int(os.getenv("COUNTY_FETCH_WORKERS", "10"))
+
+
 def run_once(db):
     col = db[COLLECTION]
     upserted = 0
-    for county, zones in FLORIDA_COUNTIES:
-        for doc in _fetch_county(county, zones):
+
+    # Fetch all 67 counties in parallel — each is an independent HTTP GET.
+    county_results: list[tuple[str, list]] = []
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+        futures = {
+            pool.submit(_fetch_county, county, zones): county
+            for county, zones in FLORIDA_COUNTIES
+        }
+        for future in as_completed(futures):
+            county = futures[future]
+            try:
+                docs = future.result()
+                county_results.append((county, docs))
+            except Exception as exc:
+                logger.error("County fetch thread error for %s: %s", county, exc)
+
+    # Write results to MongoDB sequentially (pymongo client is not thread-safe
+    # for concurrent writes from multiple threads without a connection pool;
+    # batching here keeps it simple and still benefits from parallel fetching).
+    for county, docs in county_results:
+        for doc in docs:
             alert_id = doc["alert_id"]
             # Update all fields except tts_generated (preserve existing TTS state).
             # setOnInsert ensures tts_generated=False only on brand-new docs.

@@ -195,6 +195,31 @@ def _get_alert_folder(event: str, severity: str = "") -> str:
     return ALERT_FOLDER_MAP.get(event.lower().strip(), "other_alerts")
 
 
+# Priority tiers for synthesis ordering — lower number = synthesised first.
+# A tornado warning must never queue behind a fog advisory.
+_FOLDER_PRIORITY = {
+    "priority_1":   0,
+    "tornado":      1,
+    "hurricane":    1,
+    "thunderstorm": 2,
+    "flooding":     2,
+    "fire":         2,
+    "freeze":       3,
+    "fog":          4,
+    "other_alerts": 5,
+}
+
+
+def _alert_priority(alert: dict) -> int:
+    """Return synthesis priority for an alert (lower = synthesised sooner)."""
+    event    = (alert.get("event")    or "").lower().strip()
+    severity = (alert.get("severity") or "").lower().strip()
+    if event in PRIORITY_1_EVENTS or severity in PRIORITY_1_SEVERITIES:
+        return 0
+    folder = ALERT_FOLDER_MAP.get(event, "other_alerts")
+    return _FOLDER_PRIORITY.get(folder, 5)
+
+
 def _mp3_path(base_path: str) -> str:
     """Ensure path uses .mp3 extension."""
     return os.path.splitext(base_path)[0] + ".mp3"
@@ -388,6 +413,16 @@ def _zones_for_traffic(incident: dict, zones: list) -> list:
             if z.get("catch_all") or _county_matches_zone(county, z.get("counties", []))]
 
 
+def _link_or_copy(src: str, dst: str):
+    """Hard-link src → dst for instant zero-copy distribution; fall back to copy."""
+    if os.path.exists(dst):
+        os.remove(dst)
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
 def _copy_to_priority1(src: str, zone_id: str, fname: str):
     # Only copy into the originating zone's priority_1 folder.
     # all_florida is catch_all and already receives a tracked copy under traffic/,
@@ -418,7 +453,10 @@ def process_nws_alerts(db, zones: list, tts: TTSService, progress: dict = None):
             os.remove(path)
         wavs_col.delete_one({"_id": doc["_id"]})
 
-    for alert in alerts_col.find({}):
+    # Sort by priority before synthesising so life-safety alerts (tornado,
+    # hurricane) are never queued behind routine advisories (fog, freeze).
+    pending_alerts = sorted(alerts_col.find({}), key=_alert_priority)
+    for alert in pending_alerts:
         alert_id   = str(alert.get("alert_id", ""))
         fetched_at = str(alert.get("fetched_at", ""))
         if not alert_id:
@@ -452,24 +490,23 @@ def process_nws_alerts(db, zones: list, tts: TTSService, progress: dict = None):
                 alert_id, ai_exc,
             )
 
+        # ── Determine which zones need new audio (skip up-to-date ones) ─────────
+        zones_needing_audio = []
         for zone_id in target_zones:
-            zp = _zone_progress(progress, zone_id) if progress is not None else None
             existing = wavs_col.find_one({
                 "source_type": "nws_alert",
                 "source_id":   alert_id,
                 "zone":        zone_id,
             })
-            audio_path = _mp3_path(os.path.join(ZONES_ROOT, zone_id, folder, fname))
-
             if (existing
                     and existing.get("fetched_at") == fetched_at
                     and existing.get("alert_folder") == folder
                     and existing.get("wav_path")
                     and os.path.exists(existing["wav_path"])):
-                if zp is not None:
-                    zp["nws"]["skipped"] += 1
+                if progress is not None:
+                    _zone_progress(progress, zone_id)["nws"]["skipped"] += 1
                 continue
-
+            # Clean up stale file if alert moved folders (e.g. watch → warning)
             if existing and existing.get("alert_folder") != folder:
                 old = existing.get("wav_path", "")
                 if old and os.path.exists(old):
@@ -477,52 +514,85 @@ def process_nws_alerts(db, zones: list, tts: TTSService, progress: dict = None):
                         os.remove(old)
                     except OSError:
                         pass
+            zones_needing_audio.append(zone_id)
 
-            try:
-                engine_used = "Piper"
-                if use_elevenlabs:
-                    result = elevenlabs_tts.say(spoken_text, output_file=audio_path)
-                    if result:
-                        engine_used = "ElevenLabs"
-                    else:
-                        logger.warning(
-                            "ElevenLabs failed for %s/%s — falling back to Piper",
-                            zone_id, fname,
-                        )
-                        tts.say(spoken_text, output_file=audio_path)
+        if not zones_needing_audio:
+            continue  # every zone already has current audio for this alert
+
+        # ── Synthesize ONCE to the first zone that needs audio ────────────────
+        # spoken_text, folder, and fname are identical for every zone — there is
+        # no need to run Piper + FFmpeg more than once per alert. The resulting
+        # file is distributed to remaining zones via hard link (zero-copy, instant).
+        first_zone = zones_needing_audio[0]
+        first_path = _mp3_path(os.path.join(ZONES_ROOT, first_zone, folder, fname))
+        os.makedirs(os.path.dirname(first_path), exist_ok=True)
+
+        engine_used = "Piper"
+        try:
+            if use_elevenlabs:
+                result = elevenlabs_tts.say(spoken_text, output_file=first_path)
+                if result:
+                    engine_used = "ElevenLabs"
                 else:
-                    tts.say(spoken_text, output_file=audio_path)
+                    logger.warning(
+                        "ElevenLabs failed for %s/%s — falling back to Piper",
+                        first_zone, fname,
+                    )
+                    tts.say(spoken_text, output_file=first_path)
+            else:
+                tts.say(spoken_text, output_file=first_path)
+        except Exception as e:
+            logger.error(
+                "TTS synthesis failed for alert %s (%s/%s): %s",
+                alert_id, folder, fname, e,
+            )
+            if progress is not None:
+                for zone_id in zones_needing_audio:
+                    _zone_progress(progress, zone_id)["nws"]["failed"] += 1
+                _write_progress(progress)
+            continue  # skip all zones for this alert
 
-                update_doc = {
-                    "source_type":  "nws_alert",
-                    "source_id":    alert_id,
-                    "zone":         zone_id,
-                    "alert_folder": folder,
-                    "wav_path":     audio_path,
-                    "event":        event,
-                    "severity":     severity,
-                    "area_desc":    alert.get("area_desc", ""),
-                    "fetched_at":   fetched_at,
-                    "generated_at": datetime.now(timezone.utc),
-                    "tts_engine":   engine_used,
-                }
-                if ai_severity is not None:
-                    update_doc["ai_severity"] = ai_severity
+        # ── Hard-link to remaining zones (no re-synthesis) ───────────────────
+        zone_paths = {first_zone: first_path}
+        for zone_id in zones_needing_audio[1:]:
+            dest = _mp3_path(os.path.join(ZONES_ROOT, zone_id, folder, fname))
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            _link_or_copy(first_path, dest)
+            zone_paths[zone_id] = dest
 
-                wavs_col.update_one(
-                    {"source_type": "nws_alert", "source_id": alert_id, "zone": zone_id},
-                    {"$set": update_doc},
-                    upsert=True,
-                )
-                logger.info("NWS MP3 [%s/%s] %s (engine=%s)", zone_id, folder, fname, engine_used)
-                if zp is not None:
-                    zp["nws"]["done"] += 1
-                    _write_progress(progress)
-            except Exception as e:
-                logger.error("Failed NWS MP3 %s/%s/%s: %s", zone_id, folder, fname, e)
-                if zp is not None:
-                    zp["nws"]["failed"] += 1
-                    _write_progress(progress)
+        synth_count = 1
+        link_count  = len(zones_needing_audio) - 1
+        logger.info(
+            "NWS alert %s → synthesised×%d linked×%d [%s/%s] engine=%s",
+            alert_id, synth_count, link_count, folder, fname, engine_used,
+        )
+
+        # ── Update MongoDB for every zone that got new audio ─────────────────
+        for zone_id, audio_path in zone_paths.items():
+            zp = _zone_progress(progress, zone_id) if progress is not None else None
+            update_doc = {
+                "source_type":  "nws_alert",
+                "source_id":    alert_id,
+                "zone":         zone_id,
+                "alert_folder": folder,
+                "wav_path":     audio_path,
+                "event":        event,
+                "severity":     severity,
+                "area_desc":    alert.get("area_desc", ""),
+                "fetched_at":   fetched_at,
+                "generated_at": datetime.now(timezone.utc),
+                "tts_engine":   engine_used,
+            }
+            if ai_severity is not None:
+                update_doc["ai_severity"] = ai_severity
+            wavs_col.update_one(
+                {"source_type": "nws_alert", "source_id": alert_id, "zone": zone_id},
+                {"$set": update_doc},
+                upsert=True,
+            )
+            if zp is not None:
+                zp["nws"]["done"] += 1
+                _write_progress(progress)
 
 
 _TRAFFIC_LOG_FIELDS = [
@@ -600,33 +670,83 @@ def process_traffic(db, zones: list, tts: TTSService, progress: dict = None):
         fname    = _safe_id(inc_id) + ".mp3"
         severity = (inc.get("severity") or "").strip()
 
+        # Determine which zones need new audio
+        zones_needing_audio = []
         for zone_id in target_zones:
-            zp = _zone_progress(progress, zone_id) if progress is not None else None
             existing = wavs_col.find_one({
                 "source_type": "traffic",
                 "source_id":   inc_id,
                 "zone":        zone_id,
             })
             audio_path = _mp3_path(os.path.join(ZONES_ROOT, zone_id, "traffic", fname))
-
             if (existing
                     and existing.get("last_updated") == last_updated
                     and existing.get("wav_path")
                     and os.path.exists(existing["wav_path"])):
-                if zp is not None:
-                    zp["traffic"]["skipped"] += 1
+                if progress is not None:
+                    _zone_progress(progress, zone_id)["traffic"]["skipped"] += 1
                 continue
+            zones_needing_audio.append(zone_id)
 
-            try:
-                tts.say(text, output_file=audio_path)
+        if not zones_needing_audio:
+            continue
+
+        # Synthesize once, hard-link to remaining zones
+        first_zone = zones_needing_audio[0]
+        first_path = _mp3_path(os.path.join(ZONES_ROOT, first_zone, "traffic", fname))
+        os.makedirs(os.path.dirname(first_path), exist_ok=True)
+        try:
+            tts.say(text, output_file=first_path)
+        except Exception as e:
+            logger.error("Traffic TTS failed for %s: %s", inc_id, e)
+            if progress is not None:
+                for zone_id in zones_needing_audio:
+                    _zone_progress(progress, zone_id)["traffic"]["failed"] += 1
+                _write_progress(progress)
+            continue
+
+        zone_paths = {first_zone: first_path}
+        for zone_id in zones_needing_audio[1:]:
+            dest = _mp3_path(os.path.join(ZONES_ROOT, zone_id, "traffic", fname))
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            _link_or_copy(first_path, dest)
+            zone_paths[zone_id] = dest
+
+        # Update MongoDB and handle priority-1 copies
+        for zone_id, audio_path in zone_paths.items():
+            zp = _zone_progress(progress, zone_id) if progress is not None else None
+            wavs_col.update_one(
+                {"source_type": "traffic", "source_id": inc_id, "zone": zone_id},
+                {"$set": {
+                    "source_type":  "traffic",
+                    "source_id":    inc_id,
+                    "zone":         zone_id,
+                    "alert_folder": "traffic",
+                    "wav_path":     audio_path,
+                    "county":       inc.get("county", ""),
+                    "road":         inc.get("road", ""),
+                    "severity":     severity,
+                    "last_updated": last_updated,
+                    "generated_at": datetime.now(timezone.utc),
+                    "tts_engine":   "Piper",
+                }},
+                upsert=True,
+            )
+            logger.info("Traffic MP3 [%s/traffic] %s", zone_id, fname)
+            if zp is not None:
+                zp["traffic"]["done"] += 1
+                _write_progress(progress)
+            if severity.lower() in TRAFFIC_PRIORITY_SEVERITIES:
+                _copy_to_priority1(audio_path, zone_id, fname)
+                p1_path = _mp3_path(os.path.join(ZONES_ROOT, zone_id, "priority_1", fname))
                 wavs_col.update_one(
-                    {"source_type": "traffic", "source_id": inc_id, "zone": zone_id},
+                    {"source_type": "traffic_p1", "source_id": inc_id, "zone": zone_id},
                     {"$set": {
-                        "source_type":  "traffic",
+                        "source_type":  "traffic_p1",
                         "source_id":    inc_id,
                         "zone":         zone_id,
-                        "alert_folder": "traffic",
-                        "wav_path":     audio_path,
+                        "alert_folder": "priority_1",
+                        "wav_path":     p1_path,
                         "county":       inc.get("county", ""),
                         "road":         inc.get("road", ""),
                         "severity":     severity,
@@ -636,36 +756,7 @@ def process_traffic(db, zones: list, tts: TTSService, progress: dict = None):
                     }},
                     upsert=True,
                 )
-                logger.info("Traffic MP3 [%s/traffic] %s", zone_id, fname)
-                if zp is not None:
-                    zp["traffic"]["done"] += 1
-                    _write_progress(progress)
-                if severity.lower() in TRAFFIC_PRIORITY_SEVERITIES:
-                    _copy_to_priority1(audio_path, zone_id, fname)
-                    p1_path = _mp3_path(os.path.join(ZONES_ROOT, zone_id, "priority_1", fname))
-                    wavs_col.update_one(
-                        {"source_type": "traffic_p1", "source_id": inc_id, "zone": zone_id},
-                        {"$set": {
-                            "source_type":  "traffic_p1",
-                            "source_id":    inc_id,
-                            "zone":         zone_id,
-                            "alert_folder": "priority_1",
-                            "wav_path":     p1_path,
-                            "county":       inc.get("county", ""),
-                            "road":         inc.get("road", ""),
-                            "severity":     severity,
-                            "last_updated": last_updated,
-                            "generated_at": datetime.now(timezone.utc),
-                            "tts_engine":   "Piper",
-                        }},
-                        upsert=True,
-                    )
-                    logger.info("Priority-1 record tracked [%s/priority_1] %s", zone_id, fname)
-            except Exception as e:
-                logger.error("Failed traffic MP3 %s/traffic/%s: %s", zone_id, fname, e)
-                if zp is not None:
-                    zp["traffic"]["failed"] += 1
-                    _write_progress(progress)
+                logger.info("Priority-1 record tracked [%s/priority_1] %s", zone_id, fname)
 
     _append_traffic_log(new_for_log)
 
@@ -688,53 +779,76 @@ def process_airport_weather(db, zones: list, tts: TTSService, progress: dict = N
         text  = _build_airport_text(doc)
         fname = icao.lower() + ".mp3"
 
+        # Determine which zones need new audio
+        zones_needing_audio = []
         for zone_id in target_zones:
-            zp       = _zone_progress(progress, zone_id) if progress is not None else None
-            existing = wavs_col.find_one({
+            existing   = wavs_col.find_one({
                 "source_type": "airport_weather",
                 "source_id":   icao,
                 "zone":        zone_id,
             })
             audio_path = os.path.join(ZONES_ROOT, zone_id, "airport_weather", fname)
-
             if (existing
                     and existing.get("obs_time") == obs_time
                     and existing.get("wav_path")
                     and os.path.exists(existing["wav_path"])):
-                if zp is not None:
+                if progress is not None:
+                    zp = _zone_progress(progress, zone_id)
                     zp.setdefault("airport", {"done": 0, "skipped": 0, "failed": 0})
                     zp["airport"]["skipped"] += 1
                 continue
+            zones_needing_audio.append(zone_id)
 
-            try:
-                tts.say(text, output_file=audio_path)
-                wavs_col.update_one(
-                    {"source_type": "airport_weather", "source_id": icao, "zone": zone_id},
-                    {"$set": {
-                        "source_type":  "airport_weather",
-                        "source_id":    icao,
-                        "zone":         zone_id,
-                        "alert_folder": "airport_weather",
-                        "wav_path":     audio_path,
-                        "name":         doc.get("name", ""),
-                        "obs_time":     obs_time,
-                        "flt_cat":      doc.get("fltCat", ""),
-                        "generated_at": datetime.now(timezone.utc),
-                        "tts_engine":   "Piper",
-                    }},
-                    upsert=True,
-                )
-                logger.info("Airport MP3 [%s/%s] %s", zone_id, "airport_weather", fname)
-                if zp is not None:
-                    zp.setdefault("airport", {"done": 0, "skipped": 0, "failed": 0})
-                    zp["airport"]["done"] += 1
-                    _write_progress(progress)
-            except Exception as e:
-                logger.error("Failed airport MP3 %s/%s: %s", zone_id, fname, e)
-                if zp is not None:
+        if not zones_needing_audio:
+            continue
+
+        # Synthesize once, hard-link to remaining zones
+        first_zone = zones_needing_audio[0]
+        first_path = os.path.join(ZONES_ROOT, first_zone, "airport_weather", fname)
+        os.makedirs(os.path.dirname(first_path), exist_ok=True)
+        try:
+            tts.say(text, output_file=first_path)
+        except Exception as e:
+            logger.error("Airport TTS failed for %s: %s", icao, e)
+            if progress is not None:
+                for zone_id in zones_needing_audio:
+                    zp = _zone_progress(progress, zone_id)
                     zp.setdefault("airport", {"done": 0, "skipped": 0, "failed": 0})
                     zp["airport"]["failed"] += 1
-                    _write_progress(progress)
+                _write_progress(progress)
+            continue
+
+        zone_paths = {first_zone: first_path}
+        for zone_id in zones_needing_audio[1:]:
+            dest = os.path.join(ZONES_ROOT, zone_id, "airport_weather", fname)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            _link_or_copy(first_path, dest)
+            zone_paths[zone_id] = dest
+
+        # Update MongoDB for every zone that got new audio
+        for zone_id, audio_path in zone_paths.items():
+            zp = _zone_progress(progress, zone_id) if progress is not None else None
+            wavs_col.update_one(
+                {"source_type": "airport_weather", "source_id": icao, "zone": zone_id},
+                {"$set": {
+                    "source_type":  "airport_weather",
+                    "source_id":    icao,
+                    "zone":         zone_id,
+                    "alert_folder": "airport_weather",
+                    "wav_path":     audio_path,
+                    "name":         doc.get("name", ""),
+                    "obs_time":     obs_time,
+                    "flt_cat":      doc.get("fltCat", ""),
+                    "generated_at": datetime.now(timezone.utc),
+                    "tts_engine":   "Piper",
+                }},
+                upsert=True,
+            )
+            logger.info("Airport MP3 [%s/airport_weather] %s", zone_id, fname)
+            if zp is not None:
+                zp.setdefault("airport", {"done": 0, "skipped": 0, "failed": 0})
+                zp["airport"]["done"] += 1
+                _write_progress(progress)
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────

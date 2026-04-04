@@ -49,9 +49,13 @@ class TTSService:
                 capture_output=True, timeout=30,
             )
             if conv.returncode != 0:
-                # ffmpeg not available — keep as WAV, rename to output
-                os.replace(tmp_wav, output_path.replace(".mp3", ".wav"))
-                return
+                # ffmpeg conversion failed — raise so the caller logs the failure
+                # and does NOT record a bad path in MongoDB. The WAV temp file
+                # is cleaned up in the finally block below.
+                raise RuntimeError(
+                    f"ffmpeg WAV→MP3 conversion failed (exit {conv.returncode}): "
+                    f"{conv.stderr.decode(errors='replace').strip()}"
+                )
 
             os.replace(tmp_mp3, output_path)
         finally:

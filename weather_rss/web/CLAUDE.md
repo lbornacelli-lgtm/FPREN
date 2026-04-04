@@ -115,6 +115,25 @@ db.users.insert_one({'username':'admin','password': bcrypt.hashpw(b'yourpassword
 | POST | `/api/users/delete` | ✓ | Delete user |
 | POST | `/api/users/password` | ✓ | Change user password |
 
+### User Assets (auth required — admin or own user)
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| GET | `/api/users/<username>/assets` | ✓ | List user's assets |
+| POST | `/api/users/<username>/assets` | ✓ | Add asset (body: asset_name, address, lat, lon, zip, city, nearest_airport_icao, nearest_airport_name, asset_type, notes) |
+| PUT | `/api/users/<username>/assets/<asset_id>` | ✓ | Update asset fields |
+| DELETE | `/api/users/<username>/assets/<asset_id>` | ✓ | Remove asset |
+| GET | `/api/lookup/city-by-zip?zip=XXXXX` | — | Returns county, city, lat, lon, nearest_airport_icao, nearest_airport_name |
+| POST | `/api/reports/generate-bcp` | ✓ | Generate BCP PDF — body: `{username, asset_id}` |
+
+### Waze for Cities
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| GET | `/api/waze/alerts?type=&city=&hours=2&limit=500` | — | Recent Waze point incidents |
+| GET | `/api/waze/jams?city=&min_level=&hours=2&limit=300` | — | Recent Waze jams |
+| GET | `/api/waze/nearby?lat=&lon=&radius_m=10000&hours=2` | — | Alerts + jams within radius ($nearSphere) |
+| GET | `/api/waze/status` | — | Alert/jam counts + last fetch timestamp |
+| POST | `/api/waze/refresh` | ✓ admin | Trigger on-demand Waze feed pull |
+
 ### Other
 | Method | Route | Auth | Description |
 |--------|-------|------|-------------|

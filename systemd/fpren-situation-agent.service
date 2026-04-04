@@ -1,0 +1,17 @@
+[Unit]
+Description=FPREN Situation Awareness Agent — AI situation report generator
+After=network.target mongod.service
+
+[Service]
+Type=oneshot
+User=ufuser
+WorkingDirectory=/home/ufuser/Fpren-main
+ExecStart=/home/ufuser/Fpren-main/venv/bin/python3 /home/ufuser/Fpren-main/weather_rss/situation_agent.py
+EnvironmentFile=/home/ufuser/Fpren-main/weather_station/config/.env
+Environment=MONGO_URI=mongodb://localhost:27017/
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -1738,6 +1738,137 @@ ui <- tagList(
       )
     )
   )
+      # ── Florida Rivers Alerts ────────────────────────────────────────────
+      tabItem(tabName = "rivers",
+        fluidRow(
+          box(width = 12, status = "info", solidHeader = TRUE,
+              title = tagList(icon("water"), " Florida Rivers Alerts — Coming Soon"),
+              tags$div(style = "padding: 20px 0;",
+                tags$h4(icon("clock"), " Planned Feature", style = "color:#17a2b8; margin-bottom:16px;"),
+                tags$p("This tab will integrate a real-time data endpoint for Florida river conditions,",
+                       "flood watches, water level gauges, and navigation alerts from NOAA, USGS,",
+                       "and the Army Corps of Engineers."),
+                tags$hr(),
+                tags$h5("Planned Capabilities:", style = "margin-bottom:12px;"),
+                tags$ul(style = "color:#555; line-height:2;",
+                  tags$li("Real-time river gauge data from USGS Water Resources API (waterservices.usgs.gov)"),
+                  tags$li("NOAA Hydrological Service Area (HSA) flood warnings and watches"),
+                  tags$li("Army Corps of Engineers lake and reservoir levels (Okeechobee, Rodman, etc.)"),
+                  tags$li("NWS River Forecast Center (RFC) stage and flow forecasts"),
+                  tags$li("Navigation alerts and lock/dam status for the Intracoastal Waterway and St. Johns River"),
+                  tags$li("Flood stage threshold alerts with SMS/email notification"),
+                  tags$li("Interactive map with color-coded gauge stations across Florida"),
+                  tags$li("Historical trend charts per gauge station"),
+                  tags$li("Integration with FPREN broadcast pipeline — river flood alerts auto-broadcast to affected zones")
+                ),
+                tags$hr(),
+                tags$p(tags$em("Status: "), tags$strong("Pending development."),
+                       " The data endpoint and ingestion pipeline will be built when this tab is activated.",
+                       style = "color:#888; font-size:13px;")
+              )
+          )
+        )
+      ),
+
+      # ── Social Media ─────────────────────────────────────────────────────
+      tabItem(tabName = "social_media",
+        fluidRow(
+          box(width = 12, status = "primary", solidHeader = TRUE,
+              title = tagList(icon("share-nodes"), " Social Media Publishing — Coming Soon"),
+              tags$div(style = "padding: 20px 0;",
+                tags$h4(icon("clock"), " Planned Feature", style = "color:#007bff; margin-bottom:16px;"),
+                tags$p("This tab will use LiteLLM AI agents to draft and publish emergency",
+                       "alerts and community updates to all major social media platforms simultaneously,",
+                       "including Nextdoor for hyper-local community reach."),
+                tags$hr(),
+                tags$h5("Planned Capabilities:", style = "margin-bottom:12px;"),
+                tags$ul(style = "color:#555; line-height:2;",
+                  tags$li(tags$strong("Platforms:"), " Facebook, Twitter/X, Instagram, LinkedIn, Nextdoor, Bluesky, Mastodon"),
+                  tags$li(tags$strong("LiteLLM Agent:"), " Auto-drafts platform-appropriate posts from active NWS alerts (character limits, tone, hashtags per platform)"),
+                  tags$li(tags$strong("Nextdoor integration:"), " Community-targeted posts by neighborhood/ZIP for localized emergency notices"),
+                  tags$li(tags$strong("Post scheduler:"), " Queue posts for optimal engagement times or publish immediately for critical alerts"),
+                  tags$li(tags$strong("Severity routing:"), " Extreme/Severe alerts post immediately; Moderate alerts queued for operator review"),
+                  tags$li(tags$strong("Template library:"), " Pre-approved message templates for tornado, hurricane, flood, and heat events"),
+                  tags$li(tags$strong("Engagement tracking:"), " Reach and engagement stats pulled back into the dashboard"),
+                  tags$li(tags$strong("OAuth management:"), " Secure token storage per platform in MongoDB"),
+                  tags$li(tags$strong("Audit log:"), " Full record of all posts sent, edited, or deleted")
+                ),
+                tags$hr(),
+                tags$p(tags$em("Status: "), tags$strong("Pending development."),
+                       " Requires OAuth app registration on each platform and LiteLLM agent workflow design.",
+                       style = "color:#888; font-size:13px;")
+              )
+          )
+        )
+      ),
+
+      # ── Travel Buddy ─────────────────────────────────────────────────────
+      tabItem(tabName = "travel_buddy",
+        fluidRow(
+          box(width = 12, status = "success", solidHeader = TRUE,
+              title = tagList(icon("route"), " Travel Buddy — Coming Soon"),
+              tags$div(style = "padding: 20px 0;",
+                tags$h4(icon("clock"), " Planned Feature", style = "color:#28a745; margin-bottom:16px;"),
+                tags$p("Travel Buddy will combine airport delay data, Waze traffic incidents,",
+                       "weather conditions, and historical travel patterns to recommend optimal",
+                       "departure times and route planning — synced with companion iOS and Android apps."),
+                tags$hr(),
+                tags$h5("Planned Capabilities:", style = "margin-bottom:12px;"),
+                tags$ul(style = "color:#555; line-height:2;",
+                  tags$li(tags$strong("Departure time advisor:"), " AI-computed recommended leave time based on destination, flight time, and current conditions"),
+                  tags$li(tags$strong("Airport integration:"), " Real-time FAA delay programs, TSA wait times, gate/terminal data for all Florida airports"),
+                  tags$li(tags$strong("Waze traffic layer:"), " Accident, construction, and road closure data along the travel route"),
+                  tags$li(tags$strong("Weather corridor analysis:"), " NWS alerts and radar for the entire route, not just origin/destination"),
+                  tags$li(tags$strong("Push notifications:"), " Mobile app alerts when conditions change — earlier departure recommended, delay issued, etc."),
+                  tags$li(tags$strong("User trip profiles:"), " Save home airport, preferred terminals, typical travel routes in user account"),
+                  tags$li(tags$strong("iOS & Android apps:"), " Companion apps consuming a FPREN Travel Buddy REST API for on-the-go access"),
+                  tags$li(tags$strong("Historical patterns:"), " Machine learning model trained on historical delay and traffic data per route/time of day"),
+                  tags$li(tags$strong("Fleet/group travel:"), " Multi-user trip coordination for teams traveling together")
+                ),
+                tags$hr(),
+                tags$p(tags$em("Status: "), tags$strong("Pending development."),
+                       " Requires Travel Buddy REST API design, mobile app development, and FAA data source expansion.",
+                       style = "color:#888; font-size:13px;")
+              )
+          )
+        )
+      ),
+
+      # ── Alarms & SNMP ────────────────────────────────────────────────────
+      tabItem(tabName = "alarms",
+        fluidRow(
+          box(width = 12, status = "danger", solidHeader = TRUE,
+              title = tagList(icon("bell"), " Alarms & SNMP Monitoring — Coming Soon"),
+              tags$div(style = "padding: 20px 0;",
+                tags$h4(icon("clock"), " Planned Feature", style = "color:#dc3545; margin-bottom:16px;"),
+                tags$p("This tab will provide a full SNMP-based monitoring and alarm management system,",
+                       "watching Icecast streams, data feed health, and any connected SNMP-capable device",
+                       "using standard MIBs and custom OIDs — alerting operators via SMS and email."),
+                tags$hr(),
+                tags$h5("Planned Capabilities:", style = "margin-bottom:12px;"),
+                tags$ul(style = "color:#555; line-height:2;",
+                  tags$li(tags$strong("SNMP polling:"), " SNMPv1/v2c/v3 polling of management devices using configurable MIBs and OID trees"),
+                  tags$li(tags$strong("SNMP trap receiver:"), " Listen for inbound SNMP traps from network equipment, encoders, and broadcast hardware"),
+                  tags$li(tags$strong("Icecast stream watchdog:"), " Alarm when any stream mount goes offline, bitrate drops, or listener count anomaly detected"),
+                  tags$li(tags$strong("Data feed watchdog:"), " Alert when NWS fetcher, Waze fetcher, METAR, or any MongoDB collection stops updating"),
+                  tags$li(tags$strong("Custom OID alarms:"), " User-defined thresholds on any polled OID value (CPU, temperature, signal level, etc.)"),
+                  tags$li(tags$strong("Alarm severity levels:"), " Critical, Major, Minor, Warning — each with configurable notification rules"),
+                  tags$li(tags$strong("SMS notifications:"), " Twilio SMS to configured on-call numbers for Critical and Major alarms"),
+                  tags$li(tags$strong("Email notifications:"), " SMTP email for all alarm levels with alarm details and suggested remediation"),
+                  tags$li(tags$strong("Alarm dashboard:"), " Real-time alarm list, acknowledge/clear workflow, and escalation timers"),
+                  tags$li(tags$strong("Alarm history:"), " Full audit trail of alarm events, acknowledgements, and resolutions in MongoDB"),
+                  tags$li(tags$strong("Maintenance windows:"), " Suppress alarms during scheduled maintenance to prevent false notifications"),
+                  tags$li(tags$strong("MIB browser:"), " Built-in MIB upload and OID tree browser for device discovery")
+                ),
+                tags$hr(),
+                tags$p(tags$em("Status: "), tags$strong("Pending development."),
+                       " Requires SNMP daemon (Net-SNMP), trap receiver service, and alarm rules engine implementation.",
+                       style = "color:#888; font-size:13px;")
+              )
+          )
+        )
+      )
+
   ) # close dashboardPage
   ) # close div#main_dashboard
 ) # close tagList
@@ -1806,7 +1937,11 @@ server <- function(input, output, session) {
       menuItem("Airport Delays & Weather", tabName = "airports",        icon = icon("plane")),
       menuItem("Icecast Streams",          tabName = "icecast",         icon = icon("broadcast-tower")),
       menuItem("Feed Status",              tabName = "feeds",           icon = icon("rss")),
-      menuItem("Census & Demographics",    tabName = "census",          icon = icon("users"))
+      menuItem("Census & Demographics",    tabName = "census",          icon = icon("users")),
+      menuItem("Florida Rivers Alerts",   tabName = "rivers",          icon = icon("water")),
+      menuItem("Social Media",            tabName = "social_media",    icon = icon("share-nodes")),
+      menuItem("Travel Buddy",            tabName = "travel_buddy",    icon = icon("route")),
+      menuItem("Alarms & SNMP",           tabName = "alarms",          icon = icon("bell"))
     )
     operator_items <- list(
       menuItem("Upload Content",  tabName = "upload",   icon = icon("upload")),

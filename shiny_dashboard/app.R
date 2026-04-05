@@ -664,6 +664,31 @@ ui <- tagList(
                   class = "btn-primary"))
               ),
               DTOutput("tbl_alerts"))
+        ),
+        # ── FPREN System / SNMP Status ────────────────────────────────────────
+        fluidRow(
+          valueBoxOutput("snmp_box_health",   width = 3),
+          valueBoxOutput("snmp_box_services", width = 3),
+          valueBoxOutput("snmp_box_alerts",   width = 3),
+          valueBoxOutput("snmp_box_wx_cat",   width = 3)
+        ),
+        fluidRow(
+          box(title = tagList(icon("server"), " FPREN Service OID Status"),
+              width = 7, status = "info", solidHeader = TRUE,
+              p(tags$small(
+                "Live service status from the FPREN SNMP agent. Polling community: ",
+                code("fpren_monitor"), " / OID base: ",
+                code("1.3.6.1.4.1.64533"), " — updated every 60 s.")),
+              actionButton("btn_snmp_refresh", "Refresh Now",
+                           class = "btn-xs btn-default", icon = icon("sync")),
+              br(), br(),
+              DTOutput("tbl_snmp_services")),
+          box(title = tagList(icon("map-marker-alt"), " User Asset OID Map"),
+              width = 5, status = "primary", solidHeader = TRUE,
+              p(tags$small(
+                "Each registered user asset is addressable via SNMP OID.",
+                " Poll individual assets from your SNMP management station.")),
+              DTOutput("tbl_snmp_asset_oids"))
         )
       ),
 
@@ -719,6 +744,35 @@ ui <- tagList(
                   actionButton("btn_wx_refresh", "Refresh Now",
                                class = "btn-sm btn-default", icon = icon("sync")))
               )
+          )
+        ),
+        # ── Flight Category Legend ───────────────────────────────────────────
+        fluidRow(
+          column(12,
+            div(style = "display:flex; align-items:center; gap:18px; padding:8px 14px 6px 14px; flex-wrap:wrap;",
+              tags$span(style = "font-size:12px; color:#888; font-weight:600; margin-right:4px;",
+                        icon("info-circle"), " Flight Category:"),
+              tags$span(style = "display:inline-flex; align-items:center; gap:6px;",
+                div(style = "width:14px; height:14px; border-radius:3px; background:#1a6bb5; display:inline-block;"),
+                tags$span(style = "font-size:12px; color:#333;",
+                  tags$strong("VFR"), " — Visual Flight Rules (good visibility)")),
+              tags$span(style = "display:inline-flex; align-items:center; gap:6px;",
+                div(style = "width:14px; height:14px; border-radius:3px; background:#b5860a; display:inline-block;"),
+                tags$span(style = "font-size:12px; color:#333;",
+                  tags$strong("MVFR"), " — Marginal VFR (reduced visibility)")),
+              tags$span(style = "display:inline-flex; align-items:center; gap:6px;",
+                div(style = "width:14px; height:14px; border-radius:3px; background:#c0460a; display:inline-block;"),
+                tags$span(style = "font-size:12px; color:#333;",
+                  tags$strong("IFR"), " — Instrument Flight Rules (low visibility)")),
+              tags$span(style = "display:inline-flex; align-items:center; gap:6px;",
+                div(style = "width:14px; height:14px; border-radius:3px; background:#8b0000; display:inline-block;"),
+                tags$span(style = "font-size:12px; color:#333;",
+                  tags$strong("LIFR"), " — Low IFR (very poor conditions)")),
+              tags$span(style = "display:inline-flex; align-items:center; gap:6px;",
+                div(style = "width:14px; height:14px; border-radius:3px; background:#5a5a5a; display:inline-block;"),
+                tags$span(style = "font-size:12px; color:#333;",
+                  tags$strong("UNK"), " — Data unavailable"))
+            )
           )
         ),
         uiOutput("wx_cities_grid")
@@ -1233,6 +1287,18 @@ ui <- tagList(
                 br(),
                 uiOutput("user_profile_card"),
                 hr(),
+                h5(icon("comment-dots"), " SMS & Role Management"),
+                p(tags$small("Click a cell to edit role or SMS opt-in. Click ",
+                  tags$strong("Save SMS / Role Changes"), " to persist.")),
+                DTOutput("user_sms_table"),
+                br(),
+                fluidRow(
+                  column(6,
+                    actionButton("btn_save_sms_roles", "Save SMS / Role Changes",
+                                 class = "btn-warning", icon = icon("save"))),
+                  column(6, verbatimTextOutput("sms_roles_status"))
+                ),
+                hr(),
                 h5("Add New User"),
                 p(tags$small("An invite email with a temporary password will be sent to the user's email address.")),
                 fluidRow(
@@ -1326,6 +1392,15 @@ ui <- tagList(
                   )
                 ),
                 uiOutput("asset_nearby_panel"),
+                fluidRow(
+                  column(12,
+                    div(style="margin-top:6px;",
+                      actionButton("btn_refresh_nearby", "Refresh Nearby Resources",
+                                   icon = icon("sync"), class = "btn-xs btn-default"),
+                      verbatimTextOutput("nearby_refresh_status")
+                    )
+                  )
+                ),
                 hr(),
                 h5(icon("plus"), " Add New Asset"),
                 fluidRow(
@@ -1353,6 +1428,108 @@ ui <- tagList(
                              class = "btn-success", icon = icon("plus")),
                 br(), br(),
                 verbatimTextOutput("asset_mgmt_status")
+            )
+          )
+        ),
+
+        # ── Emergency SMS ────────────────────────────────────────────────────
+        conditionalPanel(
+          condition = "output.is_admin",
+          fluidRow(
+            box(title = tagList(icon("comment-dots"), " Emergency SMS Notifications (Admin Only)"),
+                width = 12, status = "danger", solidHeader = TRUE,
+
+                # ── To-Do List Editor ──────────────────────────────────────
+                h5(icon("list"), " Role-Based Action Checklists"),
+                p(tags$small(
+                  "Define per-phase to-do lists for each profession.",
+                  " These are delivered as numbered SMS bullet lists during emergencies.")),
+                fluidRow(
+                  column(3,
+                    selectInput("todo_role", "Profession",
+                      choices = c(
+                        "Broadcast Engineer","Broadcast Administrator","Broadcast Operator",
+                        "Program Director","Chief Engineer","News Director","Production Manager",
+                        "Police Chief","Police Lieutenant","Police Officer",
+                        "Campus Security Officer","Dispatch Coordinator",
+                        "Emergency Services Coordinator","County Emergency Manager",
+                        "City Administrator","Public Safety Director","EOC Coordinator",
+                        "FEMA Liaison","Hazmat Coordinator","Facility Manager",
+                        "IT/Systems Administrator","Station Manager","Other"
+                      ),
+                      selected = "Broadcast Engineer")
+                  ),
+                  column(9,
+                    fluidRow(
+                      column(4,
+                        tags$label("Before Event"),
+                        textAreaInput("todo_before", NULL, rows = 7,
+                          placeholder = "One action per line:\nVerify generator fuel\nTest backup comms...")
+                      ),
+                      column(4,
+                        tags$label("During Event"),
+                        textAreaInput("todo_during", NULL, rows = 7,
+                          placeholder = "One action per line:\nMonitor all streams\nAlert management team...")
+                      ),
+                      column(4,
+                        tags$label("After Event"),
+                        textAreaInput("todo_after", NULL, rows = 7,
+                          placeholder = "One action per line:\nVerify all systems restored\nFile incident report...")
+                      )
+                    )
+                  )
+                ),
+                fluidRow(
+                  column(3,
+                    actionButton("btn_load_todos", "Load for Role",
+                                 class = "btn-info btn-sm", icon = icon("download"))),
+                  column(3,
+                    actionButton("btn_save_todos", "Save for Role",
+                                 class = "btn-success btn-sm", icon = icon("save"))),
+                  column(6, verbatimTextOutput("todo_edit_status"))
+                ),
+
+                hr(),
+
+                # ── SMS Blast ─────────────────────────────────────────────
+                h5(icon("paper-plane"), " Send Emergency SMS Blast"),
+                p(tags$small(
+                  "Sends role-specific action items as a numbered SMS to all opted-in users",
+                  " (or a filtered role group). Requires Twilio credentials in Stream Alerts tab.")),
+                fluidRow(
+                  column(3,
+                    selectInput("sms_blast_role", "Target Role (blank = all)",
+                      choices = c(
+                        "All SMS-Enabled Users" = "__all__",
+                        "Broadcast Engineer","Broadcast Administrator","Broadcast Operator",
+                        "Program Director","Chief Engineer","News Director","Production Manager",
+                        "Police Chief","Police Lieutenant","Police Officer",
+                        "Campus Security Officer","Dispatch Coordinator",
+                        "Emergency Services Coordinator","County Emergency Manager",
+                        "City Administrator","Public Safety Director","EOC Coordinator",
+                        "FEMA Liaison","Hazmat Coordinator","Facility Manager",
+                        "IT/Systems Administrator","Station Manager","Other"
+                      ),
+                      selected = "__all__")
+                  ),
+                  column(3,
+                    selectInput("sms_blast_phase", "Phase",
+                      choices = c("Before Event" = "before",
+                                  "During Event" = "during",
+                                  "After Event"  = "after"),
+                      selected = "before")
+                  ),
+                  column(3, br(),
+                    actionButton("btn_preview_sms", "Preview SMS",
+                                 class = "btn-info", icon = icon("eye"))
+                  ),
+                  column(3, br(),
+                    actionButton("btn_send_sms_blast", "Send SMS Now",
+                                 class = "btn-danger", icon = icon("paper-plane"))
+                  )
+                ),
+                verbatimTextOutput("sms_blast_preview"),
+                verbatimTextOutput("sms_blast_status")
             )
           )
         )
@@ -2990,6 +3167,93 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$btn_refresh_alerts, { alerts_data() })
+
+  # ── SNMP / System Status ─────────────────────────────────────────────────────
+  snmp_timer    <- reactiveTimer(60000)
+  snmp_status_rv <- reactiveVal(0)
+
+  snmp_status <- reactive({
+    snmp_timer()
+    snmp_status_rv()
+    col <- tryCatch(
+      mongo(collection = "fpren_snmp_status", db = "weather_rss", url = MONGO_URI),
+      error = function(e) NULL)
+    if (is.null(col)) return(NULL)
+    tryCatch({
+      r <- col$find('{"_id":"singleton"}')
+      col$disconnect()
+      if (nrow(r) == 0) NULL else r[1, ]
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL); NULL
+    })
+  })
+
+  observeEvent(input$btn_snmp_refresh, { snmp_status_rv(snmp_status_rv() + 1) })
+
+  .snmp_val <- function(field, default = "UNKNOWN") {
+    d <- snmp_status()
+    v <- tryCatch(d[[field]], error = function(e) NULL)
+    if (is.null(v) || length(v) == 0 || (length(v) == 1 && is.na(v))) default else v
+  }
+
+  output$snmp_box_health <- renderValueBox({
+    h <- .snmp_val("system_health", "UNKNOWN")
+    color <- switch(h, OK = "green", DEGRADED = "yellow", CRITICAL = "red", "light-blue")
+    valueBox(h, "System Health", icon = icon("heartbeat"), color = color)
+  })
+
+  output$snmp_box_services <- renderValueBox({
+    n <- as.integer(.snmp_val("active_service_count", 0))
+    color <- if (n >= 11) "green" else if (n >= 8) "yellow" else "red"
+    valueBox(paste0(n, " / 11"), "Active Services", icon = icon("cogs"), color = color)
+  })
+
+  output$snmp_box_alerts <- renderValueBox({
+    n <- as.integer(.snmp_val("active_alert_count", 0))
+    color <- if (n == 0) "green" else if (n < 5) "yellow" else "red"
+    valueBox(n, "Active NWS Alerts", icon = icon("exclamation-triangle"), color = color)
+  })
+
+  output$snmp_box_wx_cat <- renderValueBox({
+    cat <- .snmp_val("worst_flight_cat", "UNK")
+    color <- switch(cat, VFR = "green", MVFR = "yellow", IFR = "orange", LIFR = "red", "light-blue")
+    valueBox(cat, "Worst Wx Category", icon = icon("plane"), color = color)
+  })
+
+  output$tbl_snmp_services <- renderDT({
+    d <- snmp_status()
+    if (is.null(d) || is.null(d$services) || length(d$services) == 0) {
+      return(datatable(
+        data.frame(Message = "SNMP updater not yet run — check fpren-snmp-updater.timer"),
+        options = list(dom = "t"), rownames = FALSE))
+    }
+    svcs <- d$services[[1]]
+    if (!is.data.frame(svcs)) svcs <- tryCatch(as.data.frame(do.call(rbind, lapply(svcs, as.list))), error = function(e) data.frame())
+    if (nrow(svcs) == 0) return(datatable(data.frame(Message = "No service data"), options = list(dom="t"), rownames=FALSE))
+    svcs_disp <- svcs[, intersect(c("name","status","oid"), names(svcs)), drop=FALSE]
+    updated <- tryCatch(as.character(d$last_cache_update), error = function(e) "")
+    datatable(svcs_disp,
+      caption  = if (nchar(updated) > 0) paste("Last updated:", updated) else NULL,
+      options  = list(pageLength = 11, dom = "t", scrollX = TRUE),
+      rownames = FALSE) %>%
+      formatStyle("status",
+        backgroundColor = styleEqual(
+          c("active","inactive","failed","unknown"),
+          c("#dff0d8","#fcf8e3","#f2dede","#d9edf7")))
+  })
+
+  output$tbl_snmp_asset_oids <- renderDT({
+    d <- snmp_status()
+    if (is.null(d) || is.null(d$asset_oid_map) || length(d$asset_oid_map) == 0) {
+      return(datatable(data.frame(Message = "No assets registered"),
+                       options = list(dom = "t"), rownames = FALSE))
+    }
+    oid_list <- d$asset_oid_map[[1]]
+    if (!is.data.frame(oid_list)) oid_list <- tryCatch(as.data.frame(do.call(rbind, lapply(oid_list, as.list))), error = function(e) data.frame())
+    datatable(oid_list,
+      options  = list(pageLength = 10, dom = "t", scrollX = TRUE),
+      rownames = FALSE)
+  })
 
   # ── Weather Conditions tab ──────────────────────────────────────────────────
 
@@ -5479,18 +5743,19 @@ server <- function(input, output, session) {
     asset_mgmt_msg("Adding asset and fetching nearby emergency resources (may take ~10 s)...")
 
     # Fetch nearby resources via the public (no-auth) Flask endpoint
-    nearby <- list(fire_stations = list(), hospitals = list(), supermarkets = list())
+    nearby <- list(fire_stations = list(), police = list(), hospitals = list(), supermarkets = list())
     if (lat != 0 && lon != 0) {
       nearby <- tryCatch({
         r <- httr::GET(
           sprintf("http://localhost:5000/api/lookup/nearby-resources?lat=%s&lon=%s&radius_m=5000",
                   lat, lon),
-          httr::timeout(25)
+          httr::timeout(35)
         )
         d <- httr::content(r, as = "parsed", type = "application/json")
         if (isTRUE(d$ok)) {
           list(
             fire_stations = d$fire_stations %||% list(),
+            police        = d$police        %||% list(),
             hospitals     = d$hospitals     %||% list(),
             supermarkets  = d$supermarkets  %||% list()
           )
@@ -5516,6 +5781,7 @@ server <- function(input, output, session) {
       notes                = trimws(input$new_asset_notes %||% ""),
       priority             = next_priority,
       nearby_fire_stations = nearby$fire_stations,
+      nearby_police        = nearby$police,
       nearby_hospitals     = nearby$hospitals,
       nearby_supermarkets  = nearby$supermarkets,
       created_at           = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz="UTC")
@@ -5529,12 +5795,14 @@ server <- function(input, output, session) {
         sprintf('{"$push":{"assets":%s}}', jsonlite::toJSON(new_asset, auto_unbox=TRUE))
       )
       col$disconnect()
-      n_fire <- length(nearby$fire_stations)
-      n_hosp <- length(nearby$hospitals)
-      n_mkt  <- length(nearby$supermarkets)
+      n_fire   <- length(nearby$fire_stations)
+      n_police <- length(nearby$police)
+      n_hosp   <- length(nearby$hospitals)
+      n_mkt    <- length(nearby$supermarkets)
       asset_mgmt_msg(paste0(
         "Asset '", aname, "' added to ", uname, ". ",
-        "Nearby resources: ", n_fire, " fire station(s), ",
+        "Nearby: ", n_fire, " fire station(s), ",
+        n_police, " police, ",
         n_hosp, " hospital(s), ", n_mkt, " supermarket(s)."
       ))
       asset_mgmt_rv(asset_mgmt_rv() + 1)
@@ -5633,74 +5901,220 @@ server <- function(input, output, session) {
 
     if (is.null(asset)) return(NULL)
 
-    fire  <- asset$nearby_fire_stations %||% list()
-    hosp  <- asset$nearby_hospitals     %||% list()
-    mkts  <- asset$nearby_supermarkets  %||% list()
+    fire   <- asset$nearby_fire_stations %||% list()
+    police <- asset$nearby_police        %||% list()
+    hosp   <- asset$nearby_hospitals     %||% list()
+    mkts   <- asset$nearby_supermarkets  %||% list()
 
-    # If lists came back as data frames (mongolite), convert to list of lists
+    # mongolite may return data frames instead of lists — normalise
     .to_list <- function(x) {
       if (is.data.frame(x) && nrow(x) > 0) lapply(seq_len(nrow(x)), function(i) as.list(x[i,]))
       else if (is.list(x)) x else list()
     }
-    fire <- .to_list(fire); hosp <- .to_list(hosp); mkts <- .to_list(mkts)
+    fire <- .to_list(fire); police <- .to_list(police)
+    hosp <- .to_list(hosp); mkts   <- .to_list(mkts)
 
-    if (length(fire) == 0 && length(hosp) == 0 && length(mkts) == 0) {
+    if (length(fire) == 0 && length(police) == 0 && length(hosp) == 0 && length(mkts) == 0) {
       return(div(style="margin-top:8px;",
-        tags$small(style="color:#888;",
+        tags$div(class="alert alert-info", style="font-size:13px;",
           icon("info-circle"),
-          " No nearby resources found for this asset. Resources are fetched automatically when an asset is added with valid coordinates."
+          tags$strong(" No nearby resources found."),
+          tags$br(),
+          tags$small("Resources are fetched automatically from OpenStreetMap when an asset is saved with valid coordinates. ",
+                     "If missing, try deleting and re-adding the asset, or the OSM data may not be complete for this location.")
         )
       ))
     }
 
-    .resource_row <- function(r, icon_name, color) {
-      dist_txt <- if (!is.null(r$dist_km) && !is.na(r$dist_km))
-        paste0(" (", r$dist_km, " km)") else ""
+    .resource_card <- function(r, icon_name, color) {
+      phone   <- r$phone   %||% ""
+      address <- r$address %||% ""
+      dist_km <- r$dist_km %||% NA
+      src     <- r$source  %||% ""
+      # source badge label
+      src_label <- if (grepl("NPI", src)) "NPI"
+                   else if (grepl("Nominatim", src)) "Geocoded"
+                   else ""
       tags$li(
-        tags$span(style=paste0("color:", color, ";"), icon(icon_name)),
-        tags$strong(r$name %||% "Unknown"),
-        dist_txt,
-        if (!is.null(r$address) && nchar(r$address %||% "") > 0)
-          tags$span(style="color:#666; font-size:11px;", paste0(" — ", r$address))
-        else NULL,
-        if (!is.null(r$phone) && nchar(r$phone %||% "") > 0)
-          tags$span(style="color:#444; font-size:11px;", paste0(" | ", r$phone))
-        else NULL
+        style = paste0("margin-bottom:10px; list-style:none; border-left:3px solid ",
+                       color, "; padding-left:8px;"),
+        tags$div(
+          tags$span(style=paste0("color:", color, ";"), icon(icon_name), " "),
+          tags$strong(r$name %||% "Unknown"),
+          if (!is.na(dist_km)) tags$span(
+            style="color:#888; font-size:11px; margin-left:6px;",
+            paste0("(", dist_km, " km)")
+          ),
+          if (nchar(src_label) > 0) tags$span(
+            style="background:#e8f0ff; color:#3358a0; font-size:10px; border-radius:3px; padding:1px 4px; margin-left:5px;",
+            src_label
+          )
+        ),
+        if (nchar(address) > 0)
+          tags$div(style="font-size:12px; color:#555; margin-top:2px;",
+            icon("location-dot", style="font-size:10px;"), " ", address)
+        else
+          tags$div(style="font-size:11px; color:#aaa; font-style:italic; margin-top:2px;",
+            "Address not available — verify manually"),
+        if (nchar(phone) > 0)
+          tags$div(style="font-size:12px; color:#1a6bb5; margin-top:2px;",
+            icon("phone", style="font-size:10px;"), " ",
+            tags$a(href=paste0("tel:", phone), phone, style="color:#1a6bb5;"))
+        else
+          tags$div(style="font-size:11px; color:#aaa; font-style:italic; margin-top:2px;",
+            "Phone not available — verify manually")
       )
     }
 
     tagList(
       hr(),
-      h5(icon("map-marker"), paste0(" Nearby Resources — ", asset$asset_name %||% "")),
-      p(tags$small(style="color:#666;",
-        "Auto-populated from OpenStreetMap within 5 km of asset coordinates.")),
+      h5(icon("map-marker-alt"), paste0(" Nearby Resources — ", asset$asset_name %||% "")),
+      tags$p(tags$small(style="color:#666;",
+        icon("database"),
+        " Sources: OpenStreetMap (location), Nominatim (addresses), CMS NPI Registry (hospital phones). 5 km radius. ",
+        tags$span(style="background:#e8f0ff;color:#3358a0;border-radius:3px;padding:1px 4px;", "NPI"),
+        " = federal healthcare registry. ",
+        tags$span(style="background:#e8f0ff;color:#3358a0;border-radius:3px;padding:1px 4px;", "Geocoded"),
+        " = address looked up from coordinates. Verify before official use."
+      )),
       fluidRow(
-        column(4,
-          tags$h6(icon("fire-extinguisher"), tags$strong(paste0(" Fire Stations (", length(fire), ")"))),
+        column(3,
+          tags$h6(style="color:#c0392b;",
+            icon("fire"), tags$strong(paste0(" Fire (", length(fire), ")"))),
           if (length(fire) == 0)
             tags$p(tags$small(style="color:#999;", "None found within 5 km"))
           else
-            tags$ul(style="padding-left:16px; font-size:13px;",
-              lapply(fire, .resource_row, icon_name="fire", color="#c0392b"))
+            tags$ul(style="padding-left:4px;",
+              lapply(fire[seq_len(min(3, length(fire)))],
+                     .resource_card, icon_name="fire", color="#c0392b"))
         ),
-        column(4,
-          tags$h6(icon("hospital"), tags$strong(paste0(" Hospitals (", length(hosp), ")"))),
+        column(3,
+          tags$h6(style="color:#2c3e7a;",
+            icon("shield-halved"), tags$strong(paste0(" Police (", length(police), ")"))),
+          if (length(police) == 0)
+            tags$p(tags$small(style="color:#999;", "None found within 10 km"))
+          else
+            tags$ul(style="padding-left:4px;",
+              lapply(police[seq_len(min(3, length(police)))],
+                     .resource_card, icon_name="shield-halved", color="#2c3e7a"))
+        ),
+        column(3,
+          tags$h6(style="color:#2980b9;",
+            icon("hospital"), tags$strong(paste0(" Medical (", length(hosp), ")"))),
           if (length(hosp) == 0)
             tags$p(tags$small(style="color:#999;", "None found within 5 km"))
           else
-            tags$ul(style="padding-left:16px; font-size:13px;",
-              lapply(hosp, .resource_row, icon_name="plus-square", color="#2980b9"))
+            tags$ul(style="padding-left:4px;",
+              lapply(hosp[seq_len(min(3, length(hosp)))],
+                     .resource_card, icon_name="plus-square", color="#2980b9"))
         ),
-        column(4,
-          tags$h6(icon("shopping-cart"), tags$strong(paste0(" Supermarkets / Water (", length(mkts), ")"))),
+        column(3,
+          tags$h6(style="color:#27ae60;",
+            icon("basket-shopping"), tags$strong(paste0(" Grocery / Supply (", length(mkts), ")"))),
           if (length(mkts) == 0)
             tags$p(tags$small(style="color:#999;", "None found within 5 km"))
           else
-            tags$ul(style="padding-left:16px; font-size:13px;",
-              lapply(mkts, .resource_row, icon_name="shopping-basket", color="#27ae60"))
+            tags$ul(style="padding-left:4px;",
+              lapply(mkts[seq_len(min(3, length(mkts)))],
+                     .resource_card, icon_name="basket-shopping", color="#27ae60"))
         )
       )
     )
+  })
+
+  # Refresh nearby resources for selected asset
+  nearby_refresh_rv <- reactiveVal("")
+  output$nearby_refresh_status <- renderText({ nearby_refresh_rv() })
+
+  observeEvent(input$btn_refresh_nearby, {
+    if (!isTRUE(auth_rv$role == "admin")) { nearby_refresh_rv("Admin required."); return() }
+    uname <- input$asset_mgmt_user
+    sel   <- input$user_assets_table_rows_selected
+    if (is.null(uname) || nchar(uname) == 0 || is.null(sel) || length(sel) == 0) {
+      nearby_refresh_rv("Select a user and asset row first.")
+      return()
+    }
+    nearby_refresh_rv("Fetching nearby resources (may take ~10 s)...")
+
+    col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col)) { nearby_refresh_rv("DB unavailable."); return() }
+    asset_id <- tryCatch({
+      u <- col$find(sprintf('{"username":"%s"}', uname), fields='{"assets":1,"_id":0}')
+      if (nrow(u) == 0 || is.null(u$assets)) { col$disconnect(); return() }
+      assets <- u$assets[[1]]
+      if (is.data.frame(assets) && nrow(assets) >= sel)
+        as.list(assets[sel, ])$asset_id else NULL
+    }, error=function(e) { tryCatch(col$disconnect(), error=function(e2) NULL); NULL })
+    tryCatch(col$disconnect(), error=function(e2) NULL)
+    if (is.null(asset_id)) { nearby_refresh_rv("Could not identify selected asset."); return() }
+
+    # Get lat/lon of the asset
+    col2 <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col2)) { nearby_refresh_rv("DB unavailable."); return() }
+    asset <- tryCatch({
+      u <- col2$find(sprintf('{"username":"%s"}', uname), fields='{"assets":1,"_id":0}')
+      col2$disconnect()
+      if (nrow(u) == 0 || is.null(u$assets)) NULL
+      else {
+        assets <- u$assets[[1]]
+        if (is.data.frame(assets)) {
+          idx <- which(assets$asset_id == asset_id)
+          if (length(idx) > 0) as.list(assets[idx[1], ]) else NULL
+        } else NULL
+      }
+    }, error=function(e) { tryCatch(col2$disconnect(), error=function(e2) NULL); NULL })
+    if (is.null(asset)) { nearby_refresh_rv("Asset not found in database."); return() }
+
+    lat <- as.numeric(asset$lat %||% 0)
+    lon <- as.numeric(asset$lon %||% 0)
+    if (is.na(lat) || is.na(lon) || lat == 0 || lon == 0) {
+      nearby_refresh_rv("Asset has no valid coordinates.")
+      return()
+    }
+
+    nearby <- tryCatch({
+      r <- httr::GET(
+        sprintf("http://localhost:5000/api/lookup/nearby-resources?lat=%s&lon=%s&radius_m=5000", lat, lon),
+        httr::timeout(35)
+      )
+      d <- httr::content(r, as="parsed", type="application/json")
+      if (isTRUE(d$ok)) list(
+        fire_stations = d$fire_stations %||% list(),
+        police        = d$police        %||% list(),
+        hospitals     = d$hospitals     %||% list(),
+        supermarkets  = d$supermarkets  %||% list()
+      ) else list(fire_stations=list(), police=list(), hospitals=list(), supermarkets=list())
+    }, error=function(e) list(fire_stations=list(), police=list(), hospitals=list(), supermarkets=list()))
+
+    col3 <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
+    if (is.null(col3)) { nearby_refresh_rv("DB unavailable."); return() }
+    tryCatch({
+      col3$update(
+        sprintf('{"username":"%s","assets.asset_id":"%s"}', uname, asset_id),
+        jsonlite::toJSON(list(
+          `$set` = list(
+            `assets.$.nearby_fire_stations` = nearby$fire_stations,
+            `assets.$.nearby_police`        = nearby$police,
+            `assets.$.nearby_hospitals`     = nearby$hospitals,
+            `assets.$.nearby_supermarkets`  = nearby$supermarkets
+          )
+        ), auto_unbox=TRUE)
+      )
+      col3$disconnect()
+      n_fire   <- length(nearby$fire_stations)
+      n_police <- length(nearby$police)
+      n_hosp   <- length(nearby$hospitals)
+      n_mkt    <- length(nearby$supermarkets)
+      nearby_refresh_rv(paste0(
+        "Updated: ", n_fire, " fire station(s), ",
+        n_police, " police, ",
+        n_hosp, " hospital(s), ", n_mkt, " grocery/supply."
+      ))
+      asset_mgmt_rv(asset_mgmt_rv() + 1)
+    }, error=function(e) {
+      tryCatch(col3$disconnect(), error=function(e2) NULL)
+      nearby_refresh_rv(paste0("Error saving: ", conditionMessage(e)))
+    })
   })
 
   # Template selector — hidden when "All Facilities" is chosen (uses profession-mapped template)
@@ -5957,7 +6371,8 @@ server <- function(input, output, session) {
 
   # Helper: render one BCP PDF for a single asset
   # all_assets: data frame of all user assets (sorted by priority); used for cross-asset section
-  .render_one_bcp <- function(uname, asset, tmpl_key, output_dir, timestamp, all_assets = NULL) {
+  .render_one_bcp <- function(uname, asset, tmpl_key, output_dir, timestamp,
+                              all_assets = NULL, profession = "General") {
     template_map <- list(
       general       = "/home/ufuser/Fpren-main/reports/business_continuity_report.Rmd",
       broadcast     = "/home/ufuser/Fpren-main/reports/bcp_broadcast_facility.Rmd",
@@ -6002,6 +6417,7 @@ server <- function(input, output, session) {
         asset_type           = asset$asset_type          %||% "Facility",
         notes                = asset$notes               %||% "",
         other_assets_json    = other_assets_json,
+        profession           = profession,
         mongo_uri            = MONGO_URI, days_back = 30L
       ), quiet = TRUE
     ))
@@ -6053,7 +6469,7 @@ server <- function(input, output, session) {
           for (asset in asset_list) {
             tryCatch({
               f <- .render_one_bcp(uname_i, asset, tmpl_i, output_dir, timestamp,
-                                   all_assets = all_assets_i)
+                                   all_assets = all_assets_i, profession = prof_i %||% "General")
               generated <- c(generated, basename(f))
               if (isTRUE(input$bcp_email) && !is.null(row$email) && nchar(as.character(row$email)) > 0) {
                 send_fpren_email(as.character(row$email),
@@ -6079,9 +6495,13 @@ server <- function(input, output, session) {
     }
     bcp_status_msg("Generating BCP — this may take 60-120 seconds...")
 
-    # Fetch asset details from MongoDB
+    # Fetch asset details + profession from MongoDB
     col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
     if (is.null(col)) { bcp_status_msg("DB unavailable."); return() }
+    user_profession <- tryCatch({
+      up <- col$find(sprintf('{"username":"%s"}', uname), fields='{"profession":1,"_id":0}')
+      if (nrow(up) > 0 && !is.null(up$profession) && !is.na(up$profession)) as.character(up$profession) else "General"
+    }, error = function(e) "General")
     asset <- tryCatch({
       u <- col$find(sprintf('{"username":"%s"}', uname), fields='{"assets":1,"_id":0}')
       col$disconnect()
@@ -6109,7 +6529,7 @@ server <- function(input, output, session) {
 
     tryCatch({
       output_file <- .render_one_bcp(uname, asset, tmpl_key, output_dir, timestamp,
-                                     all_assets = all_assets)
+                                     all_assets = all_assets, profession = user_profession)
       msg <- paste0("BCP saved: ", basename(output_file))
       if (isTRUE(input$bcp_email)) {
         u_email <- tryCatch({
@@ -6982,6 +7402,201 @@ server <- function(input, output, session) {
         inherit = FALSE
       )
     p
+  })
+
+  # ── User SMS / Role Management ───────────────────────────────────────────────
+  user_sms_rv    <- reactiveVal(0)
+  user_sms_edits <- reactiveVal(list())
+  sms_roles_msg  <- reactiveVal("")
+  output$sms_roles_status <- renderText({ sms_roles_msg() })
+
+  output$user_sms_table <- renderDT({
+    user_mgmt_rv()
+    user_sms_rv()
+    col <- tryCatch(
+      mongo(collection = "users", db = "weather_rss", url = MONGO_URI),
+      error = function(e) NULL)
+    if (is.null(col)) return(datatable(data.frame(Message = "DB unavailable"), rownames = FALSE))
+    tryCatch({
+      u <- col$find("{}", fields = '{"username":1,"role":1,"sms_emergency_enabled":1,"phone":1,"profession":1,"_id":0}')
+      col$disconnect()
+      u$sms_emergency_enabled <- ifelse(is.na(u$sms_emergency_enabled) | is.null(u$sms_emergency_enabled),
+                                        TRUE, as.logical(u$sms_emergency_enabled))
+      colnames(u)[colnames(u) == "sms_emergency_enabled"] <- "SMS Enabled"
+      datatable(u,
+        editable = list(target = "cell", disable = list(columns = c(0, 3, 4))),
+        options  = list(pageLength = 15, scrollX = TRUE),
+        rownames = FALSE,
+        caption  = "Edit Role (col 1) or SMS Enabled (col 2 — true/false). Click Save to persist.")
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL)
+      datatable(data.frame(Message = conditionMessage(e)), rownames = FALSE)
+    })
+  })
+
+  observeEvent(input$user_sms_table_cell_edit, {
+    info <- input$user_sms_table_cell_edit
+    cur  <- user_sms_edits()
+    cur[[as.character(info$row)]] <- list(col = info$col, value = info$value)
+    user_sms_edits(cur)
+  })
+
+  observeEvent(input$btn_save_sms_roles, {
+    if (!isTRUE(auth_rv$role == "admin")) { sms_roles_msg("Access denied."); return() }
+    edits <- user_sms_edits()
+    if (length(edits) == 0) { sms_roles_msg("No changes to save."); return() }
+    col <- tryCatch(
+      mongo(collection = "users", db = "weather_rss", url = MONGO_URI),
+      error = function(e) NULL)
+    if (is.null(col)) { sms_roles_msg("DB unavailable."); return() }
+    tryCatch({
+      u <- col$find("{}", fields = '{"username":1,"role":1,"sms_emergency_enabled":1,"_id":0}')
+      saved <- 0
+      for (row_key in names(edits)) {
+        row_idx   <- as.integer(row_key)
+        ei        <- edits[[row_key]]
+        if (row_idx < 1 || row_idx > nrow(u)) next
+        uname     <- u$username[row_idx]
+        if (ei$col == 1) {  # role
+          col$update(sprintf('{"username":"%s"}', uname),
+                     sprintf('{"$set":{"role":"%s"}}', gsub('"', '', as.character(ei$value))))
+          saved <- saved + 1
+        } else if (ei$col == 2) {  # SMS enabled
+          enabled <- tolower(trimws(as.character(ei$value))) %in% c("true","1","yes","TRUE")
+          col$update(sprintf('{"username":"%s"}', uname),
+                     sprintf('{"$set":{"sms_emergency_enabled":%s}}', tolower(as.character(enabled))))
+          saved <- saved + 1
+        }
+      }
+      col$disconnect()
+      user_sms_edits(list())
+      user_sms_rv(user_sms_rv() + 1)
+      sms_roles_msg(paste0("Saved ", saved, " change(s)."))
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL)
+      sms_roles_msg(paste0("Error: ", conditionMessage(e)))
+    })
+  })
+
+  # ── Emergency SMS To-Do List Editor ─────────────────────────────────────────
+  todo_edit_msg <- reactiveVal("")
+  output$todo_edit_status <- renderText({ todo_edit_msg() })
+
+  observeEvent(input$btn_load_todos, {
+    role <- input$todo_role
+    if (is.null(role) || nchar(role) == 0) { todo_edit_msg("Select a role first."); return() }
+    col <- tryCatch(
+      mongo(collection = "emergency_roles_config", db = "weather_rss", url = MONGO_URI),
+      error = function(e) NULL)
+    if (is.null(col)) { todo_edit_msg("DB unavailable."); return() }
+    tryCatch({
+      for (phase in c("before","during","after")) {
+        q <- sprintf('{"role":"%s","phase":"%s"}', gsub('"', '', role), phase)
+        r <- col$find(q, fields = '{"todos":1,"_id":0}')
+        todos <- if (nrow(r) > 0 && !is.null(r$todos)) {
+          t <- r$todos[[1]]
+          if (is.list(t)) paste(unlist(t), collapse = "\n") else paste(as.character(t), collapse = "\n")
+        } else ""
+        field_id <- paste0("todo_", phase)
+        updateTextAreaInput(session, field_id, value = todos)
+      }
+      col$disconnect()
+      todo_edit_msg(paste0("Loaded: ", role))
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL)
+      todo_edit_msg(paste0("Error: ", conditionMessage(e)))
+    })
+  })
+
+  observeEvent(input$btn_save_todos, {
+    if (!isTRUE(auth_rv$role == "admin")) { todo_edit_msg("Access denied."); return() }
+    role <- input$todo_role
+    if (is.null(role) || nchar(role) == 0) { todo_edit_msg("Select a role first."); return() }
+    col <- tryCatch(
+      mongo(collection = "emergency_roles_config", db = "weather_rss", url = MONGO_URI),
+      error = function(e) NULL)
+    if (is.null(col)) { todo_edit_msg("DB unavailable."); return() }
+    tryCatch({
+      now_str <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+      for (phase in c("before","during","after")) {
+        field_id <- paste0("todo_", phase)
+        raw      <- input[[field_id]] %||% ""
+        todos    <- Filter(nchar, trimws(strsplit(raw, "\n")[[1]]))
+        id_key   <- paste0(role, "|", phase)
+        col$upsert(
+          sprintf('{"_id":"%s"}', gsub('"', '', id_key)),
+          sprintf('{"$set":{"role":"%s","phase":"%s","todos":%s,"updated_at":"%s"}}',
+                  gsub('"', '', role), phase,
+                  jsonlite::toJSON(todos, auto_unbox = FALSE),
+                  now_str)
+        )
+      }
+      col$disconnect()
+      todo_edit_msg(paste0("Saved to-do lists for: ", role))
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL)
+      todo_edit_msg(paste0("Error: ", conditionMessage(e)))
+    })
+  })
+
+  # ── SMS Blast ────────────────────────────────────────────────────────────────
+  sms_blast_msg <- reactiveVal("")
+  output$sms_blast_status  <- renderText({ sms_blast_msg() })
+  output$sms_blast_preview <- renderText({
+    req(input$btn_preview_sms)
+    isolate({
+      role  <- input$sms_blast_role %||% "__all__"
+      phase <- input$sms_blast_phase %||% "before"
+      col <- tryCatch(
+        mongo(collection = "emergency_roles_config", db = "weather_rss", url = MONGO_URI),
+        error = function(e) NULL)
+      todos <- tryCatch({
+        if (is.null(col) || role == "__all__") return("(Select a specific role to preview)")
+        q <- sprintf('{"role":"%s","phase":"%s"}', gsub('"', '', role), phase)
+        r <- col$find(q, fields = '{"todos":1,"_id":0}')
+        col$disconnect()
+        if (nrow(r) == 0 || is.null(r$todos)) character(0)
+        else { t <- r$todos[[1]]; if (is.list(t)) unlist(t) else as.character(t) }
+      }, error = function(e) { tryCatch(col$disconnect(), error=function(e2) NULL); character(0) })
+      phase_lbl <- c(before="BEFORE EVENT",during="DURING EVENT",after="AFTER EVENT")[[phase]]
+      header <- paste0("FPREN EMERGENCY — ", phase_lbl, "\nActions for ", role, ":\n")
+      if (length(todos) == 0) return(paste0(header, "(No checklist defined for this role/phase)\n—FPREN"))
+      items  <- paste(seq_along(todos), todos, sep=". ", collapse="\n")
+      paste0(header, items, "\nReply STOP to opt out. —FPREN")
+    })
+  }) %>% bindEvent(input$btn_preview_sms)
+
+  observeEvent(input$btn_send_sms_blast, {
+    if (!isTRUE(auth_rv$role == "admin")) { sms_blast_msg("Access denied."); return() }
+    role  <- input$sms_blast_role  %||% "__all__"
+    phase <- input$sms_blast_phase %||% "before"
+    sms_blast_msg("Sending SMS...")
+    col <- tryCatch(
+      mongo(collection = "users", db = "weather_rss", url = MONGO_URI),
+      error = function(e) NULL)
+    if (is.null(col)) { sms_blast_msg("DB unavailable."); return() }
+    phones <- tryCatch({
+      q <- if (role == "__all__") '{"sms_emergency_enabled":true}' else
+        sprintf('{"sms_emergency_enabled":true,"profession":"%s"}', gsub('"','',role))
+      u <- col$find(q, fields = '{"phone":1,"_id":0}')
+      col$disconnect()
+      phones <- u$phone[!is.na(u$phone) & nchar(trimws(u$phone)) > 0]
+      trimws(phones)
+    }, error = function(e) { tryCatch(col$disconnect(), error=function(e2) NULL); character(0) })
+    if (length(phones) == 0) { sms_blast_msg("No SMS-enabled users with phone numbers found."); return() }
+    phones_csv <- paste(phones, collapse = ",")
+    result <- tryCatch(
+      system2("python3",
+              args = c(
+                "/home/ufuser/Fpren-main/weather_rss/emergency_sms.py",
+                "--phones", shQuote(phones_csv),
+                "--role",   shQuote(if (role == "__all__") "General" else role),
+                "--phase",  shQuote(phase),
+                "--mongo-uri", shQuote(MONGO_URI)),
+              stdout = TRUE, stderr = TRUE, timeout = 120),
+      error = function(e) paste("System error:", conditionMessage(e))
+    )
+    sms_blast_msg(paste(result, collapse = "\n"))
   })
 
 }

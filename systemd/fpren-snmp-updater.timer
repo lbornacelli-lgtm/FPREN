@@ -1,0 +1,11 @@
+[Unit]
+Description=Run FPREN SNMP updater every 60 seconds
+After=mongod.service
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=60s
+Unit=fpren-snmp-updater.service
+
+[Install]
+WantedBy=timers.target

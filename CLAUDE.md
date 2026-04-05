@@ -492,3 +492,58 @@ Each major subdirectory has its own CLAUDE.md with component-specific context:
 - [`weather_rss/web/CLAUDE.md`](weather_rss/web/CLAUDE.md) — Flask admin, auth, all API routes
 
 > **Rule:** Every new feature added to this project must include a corresponding update to the relevant subdirectory CLAUDE.md file.
+
+---
+
+## SNMP Monitoring (added 2026-04-05)
+
+### SNMP Agent
+- **OID base:** `1.3.6.1.4.1.64533` (FPREN private enterprise — register with IANA if public deployment needed)
+- **Community string:** `fpren_monitor`
+- **pass_persist script:** `scripts/fpren_snmp_agent.py` (invoked via shell wrapper `scripts/run_fpren_snmp.sh`)
+- **Standalone updater:** `scripts/fpren_snmp_update.py` — run by `fpren-snmp-updater.timer` every 60s; writes to MongoDB `fpren_snmp_status`
+- **Extend OIDs:** `fprenHealth`, `fprenAlerts`, `fprenServices`, `fprenWxCat`, `fprenListeners`, `fprenUpdated`
+- **MIB file:** `scripts/fpren_mib.txt` (also at `/usr/share/snmp/mibs/FPREN-MIB.txt`)
+- **snmpd.conf:** `/etc/snmp/snmpd.conf`
+- **Test:** `snmpwalk -v2c -c fpren_monitor localhost .1.3.6.1.4.1.64533.1`
+- **snmp_query helper:** `scripts/snmp_query.sh <field>` — returns single field from MongoDB `fpren_snmp_status`
+
+### OID Tree Summary
+| OID | Description |
+|-----|-------------|
+| `.1.3.6.1.4.1.64533.1.1.0` | systemHealth (OK/DEGRADED/CRITICAL) |
+| `.1.3.6.1.4.1.64533.1.2.0` | activeAlertCount |
+| `.1.3.6.1.4.1.64533.1.5.0` | worstFlightCat |
+| `.1.3.6.1.4.1.64533.1.6.0` | icecastListeners |
+| `.1.3.6.1.4.1.64533.1.7.0` | mongodbStatus |
+| `.1.3.6.1.4.1.64533.1.10.0` | activeServiceCount |
+| `.1.3.6.1.4.1.64533.2.1.3.N` | serviceStatus for service N (1–11) |
+| `.1.3.6.1.4.1.64533.4.U.A` | User U, Asset A OID address |
+
+### New systemd units
+- `fpren-snmp-updater.service` + `.timer` — runs `fpren_snmp_update.py` every 60s as `ufuser`
+
+---
+
+## Emergency SMS System (added 2026-04-05)
+
+### MongoDB collections
+- `emergency_roles_config` — `{_id: "role|phase", role, phase, todos: [], updated_at}`. Seeded for 4 roles × 3 phases.
+
+### User field
+- `users.sms_emergency_enabled` (boolean) — admin-controlled per-user SMS opt-in.
+
+### CLI tool
+`weather_rss/emergency_sms.py --phones <csv> --role <role> --phase <before|during|after>`
+Formats numbered SMS from MongoDB todos, sends via Twilio. Supports `--dry-run`.
+
+---
+
+## BCP Report Enhancements (added 2026-04-05)
+
+- New `profession` param in `business_continuity_report.Rmd`
+- Waze accident/jam hotspot section (15 km radius, last 6 h)
+- FL county EM offices with addresses + phones (9 counties)
+- State/federal agency contacts table
+- Role-specific contacts per profession
+- SMS Emergency Action Checklist section (3-column: before/during/after)

@@ -1,0 +1,230 @@
+FPREN-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32, enterprises
+        FROM SNMPv2-SMI
+    DisplayString
+        FROM SNMPv2-TC
+    MODULE-COMPLIANCE, OBJECT-GROUP
+        FROM SNMPv2-CONF;
+
+fprenMIB MODULE-IDENTITY
+    LAST-UPDATED "202604050000Z"
+    ORGANIZATION "University of Florida — FPREN"
+    CONTACT-INFO "Lawrence Bornace
+                  University of Florida
+                  Gainesville, FL 32611
+                  Email: lawrence.bornace@ufl.edu"
+    DESCRIPTION
+        "MIB for the Florida Public Radio Emergency Network (FPREN) monitoring agent.
+         Exposes system health, service statuses, alert counts, and weather data
+         for offsite SNMP management monitoring.
+
+         Private Enterprise Number: 64533 (placeholder — register at iana.org/pen if deploying publicly).
+
+         To use with an SNMP management station (PRTG, Nagios, Zabbix, SolarWinds):
+           1. Copy this file to your MIB directory
+           2. Load FPREN-MIB
+           3. Poll community string 'fpren_monitor' on the FPREN server (port 161)
+           4. Walk subtree 1.3.6.1.4.1.64533 to discover all objects"
+    REVISION "202604050000Z"
+    DESCRIPTION "Initial release"
+    ::= { enterprises 64533 }
+
+
+-- ── Object Groups ────────────────────────────────────────────────────────────
+
+fprenSystem   OBJECT IDENTIFIER ::= { fprenMIB 1 }
+fprenSvcTable OBJECT IDENTIFIER ::= { fprenMIB 2 }
+fprenAlerts   OBJECT IDENTIFIER ::= { fprenMIB 3 }
+fprenAssets   OBJECT IDENTIFIER ::= { fprenMIB 4 }
+
+
+-- ── System Scalars (.1.*) ────────────────────────────────────────────────────
+
+systemHealth OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Overall FPREN system health.
+                 Values: OK | DEGRADED | CRITICAL
+                 OK      = all services running, MongoDB up, no extreme alerts
+                 DEGRADED= some services down or MongoDB unreachable
+                 CRITICAL= 5+ services down or MongoDB completely unavailable"
+    ::= { fprenSystem 1 }
+
+activeAlertCount OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Total number of active NWS/IPAWS alerts currently in the system."
+    ::= { fprenSystem 2 }
+
+extremeAlertCount OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Number of active alerts with severity=Extreme."
+    ::= { fprenSystem 3 }
+
+severeAlertCount OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Number of active alerts with severity=Severe."
+    ::= { fprenSystem 4 }
+
+worstFlightCat OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Worst aviation flight category across all monitored FL airports.
+                 Values: VFR (good) | MVFR (marginal) | IFR (poor) | LIFR (very poor) | UNK"
+    ::= { fprenSystem 5 }
+
+icecastListeners OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Total concurrent listeners across all Icecast zone mounts."
+    ::= { fprenSystem 6 }
+
+mongodbStatus OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "MongoDB availability. Values: UP | DOWN"
+    ::= { fprenSystem 7 }
+
+totalUserAssets OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Total number of registered user assets across all FPREN users."
+    ::= { fprenSystem 8 }
+
+lastCacheUpdate OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "ISO8601 UTC timestamp of the last data cache refresh."
+    ::= { fprenSystem 9 }
+
+activeServiceCount OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Number of FPREN systemd services currently in 'active' state (out of 11 monitored)."
+    ::= { fprenSystem 10 }
+
+
+-- ── Service Table (.2.1.*) ───────────────────────────────────────────────────
+-- Index: serviceIndex (INTEGER 1..11)
+-- Services monitored:
+--   1=beacon-web-dashboard      7=beacon-rivers-fetcher
+--   2=beacon-station-engine     8=beacon-rivers-agent
+--   3=beacon-ipaws-fetcher      9=zone-alert-tts
+--   4=beacon-obs-fetcher       10=fpren-broadcast-generator
+--   5=beacon-extended-fetcher  11=fpren-multi-zone-streamer
+--   6=beacon-mongo-tts
+
+fprenServiceTable OBJECT-TYPE
+    SYNTAX      SEQUENCE OF FprenServiceEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Table of monitored FPREN systemd services."
+    ::= { fprenSvcTable 1 }
+
+FprenServiceEntry ::= SEQUENCE {
+    serviceIndex      Integer32,
+    serviceName       DisplayString,
+    serviceStatus     DisplayString,
+    serviceActiveState DisplayString
+}
+
+fprenServiceEntry OBJECT-TYPE
+    SYNTAX      FprenServiceEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "A single service row."
+    INDEX { serviceIndex }
+    ::= { fprenServiceTable 1 }
+
+serviceIndex OBJECT-TYPE
+    SYNTAX      Integer32 (1..11)
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Service table row index (1–11)."
+    ::= { fprenServiceEntry 1 }
+
+serviceName OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "systemd service name (e.g. beacon-station-engine)."
+    ::= { fprenServiceEntry 2 }
+
+serviceStatus OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Service status string from systemctl is-active: active | inactive | failed | unknown."
+    ::= { fprenServiceEntry 3 }
+
+serviceActiveState OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Raw systemctl ActiveState value."
+    ::= { fprenServiceEntry 4 }
+
+
+-- ── Alert Counters (.3.*) ────────────────────────────────────────────────────
+-- Duplicates .1.2-4 but under .3 for SNMP trap notification use.
+
+alertCountTrap OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Total active alert count (duplicate of activeAlertCount for trap use)."
+    ::= { fprenAlerts 1 }
+
+extremeCountTrap OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Active Extreme alert count (duplicate of extremeAlertCount for trap use)."
+    ::= { fprenAlerts 2 }
+
+severeCountTrap OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Active Severe alert count (duplicate of severeAlertCount for trap use)."
+    ::= { fprenAlerts 3 }
+
+
+-- ── Compliance ──────────────────────────────────────────────────────────────
+
+fprenMIBConformance OBJECT IDENTIFIER ::= { fprenMIB 99 }
+
+fprenMIBCompliance MODULE-COMPLIANCE
+    STATUS current
+    DESCRIPTION "Minimal compliance for FPREN monitoring."
+    MODULE
+        MANDATORY-GROUPS { fprenSystemGroup }
+    ::= { fprenMIBConformance 1 }
+
+fprenSystemGroup OBJECT-GROUP
+    OBJECTS {
+        systemHealth, activeAlertCount, extremeAlertCount, severeAlertCount,
+        worstFlightCat, icecastListeners, mongodbStatus, totalUserAssets,
+        lastCacheUpdate, activeServiceCount,
+        serviceIndex, serviceName, serviceStatus, serviceActiveState,
+        alertCountTrap, extremeCountTrap, severeCountTrap
+    }
+    STATUS current
+    DESCRIPTION "All FPREN monitoring objects."
+    ::= { fprenMIBConformance 2 }
+
+END

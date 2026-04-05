@@ -381,3 +381,54 @@ The Normal Mode Playlist in the Zones tab now uses a drag-to-reorder list (Sorta
 - The `emayili` package must be installed: `sudo Rscript -e "install.packages('emayili')"`.
 - `county_alerts_report.Rmd` requires `kableExtra` — install if missing.
 - ZIP lookup is range-based (not USPS-authoritative) — covers all 67 FL counties with primary ranges.
+
+---
+
+## SNMP / System Status Panel (added 2026-04-05)
+
+**Location:** Alerts tab (`tabName="alerts"`) — second fluidRow below the NWS alerts table.
+
+Four valueBoxes + two DT tables reading from MongoDB `fpren_snmp_status` collection:
+- `snmp_box_health` — systemHealth (OK/DEGRADED/CRITICAL)
+- `snmp_box_services` — active service count / 11
+- `snmp_box_alerts` — active NWS alert count
+- `snmp_box_wx_cat` — worst flight category
+- `tbl_snmp_services` — FPREN service OID table (name, status, OID)
+- `tbl_snmp_asset_oids` — user asset OID map
+
+Data written by `scripts/fpren_snmp_update.py` via `systemd/fpren-snmp-updater.timer` every 60s.
+SNMP agent: `scripts/run_fpren_snmp.sh` → `scripts/fpren_snmp_agent.py` (pass_persist, OID base `1.3.6.1.4.1.64533`).
+Community string: `fpren_monitor`. Test: `snmpwalk -v2c -c fpren_monitor localhost .1.3.6.1.4.1.64533.1`
+
+---
+
+## Emergency SMS Notifications (added 2026-04-05)
+
+**Location:** Config tab — below User Assets panel.
+
+### MongoDB:
+- `emergency_roles_config` — per-(role, phase) to-do lists. `_id = "role|phase"`. 12 seed docs for Broadcast Engineer, County Emergency Manager, IT/Systems Administrator, Police Chief.
+- `users.sms_emergency_enabled` (boolean, default TRUE) — opt-in flag.
+
+### UI panels:
+1. **SMS & Role Management** (in User Management box): inline-editable DT for role and SMS opt-in per user. Save via `btn_save_sms_roles`.
+2. **Role-Based Action Checklists**: textarea editor per (role, phase). Load/save to `emergency_roles_config`.
+3. **Emergency SMS Blast**: select target role + phase, preview SMS, send via Twilio (`btn_send_sms_blast`).
+
+### SMS dispatch:
+`weather_rss/emergency_sms.py --phones <csv> --role <role> --phase <phase> --mongo-uri <uri>`
+Reads todos from MongoDB, formats as numbered list, sends via Twilio (credentials in `stream_notify_config.json`).
+
+---
+
+## BCP Report Enhancements (added 2026-04-05)
+
+### New `profession` param
+`reports/business_continuity_report.Rmd` now accepts `profession` param. Passed from `app.R` `.render_one_bcp()`.
+
+### New sections in BCP:
+1. **Waze Accident Hotspots** — queries `waze_alerts` (ACCIDENT type) and `waze_jams` (level≥3) within 15 km of asset using Haversine distance (last 6 hours).
+2. **County Emergency Management** table — 9 major FL county EM offices with addresses + phones.
+3. **State & Federal Agencies** table — FL DEM, FDLE, FDOT D2, FL National Guard, FEMA R4, FBI Tampa, Red Cross FL.
+4. **Role-Specific Contacts** — per-profession agency contacts for Broadcast, Law Enforcement, EM, IT, Facility roles.
+5. **SMS Emergency Action Checklist** — queries `emergency_roles_config` for the user's profession, renders 3-column (before/during/after) checklist table.

@@ -3310,6 +3310,7 @@ def api_user_assets_add(username):
         "notes":               data.get("notes", "").strip(),
         "created_at":          datetime.now(timezone.utc).isoformat(),
         "nearby_fire_stations":  nearby.get("fire_stations", []),
+        "nearby_police":         nearby.get("police", []),
         "nearby_hospitals":      nearby.get("hospitals", []),
         "nearby_supermarkets":   nearby.get("supermarkets", []),
     }
@@ -3321,15 +3322,18 @@ def api_user_assets_add(username):
     client.close()
     if result.matched_count == 0:
         return jsonify({"ok": False, "message": "User not found"}), 404
-    n_fire = len(new_asset["nearby_fire_stations"])
-    n_hosp = len(new_asset["nearby_hospitals"])
-    n_mkt  = len(new_asset["nearby_supermarkets"])
+    n_fire   = len(new_asset["nearby_fire_stations"])
+    n_police = len(new_asset["nearby_police"])
+    n_hosp   = len(new_asset["nearby_hospitals"])
+    n_mkt    = len(new_asset["nearby_supermarkets"])
     return jsonify({
         "ok":      True,
-        "message": f"Asset added ({n_fire} fire stations, {n_hosp} hospitals, {n_mkt} supermarkets found nearby)",
+        "message": (f"Asset added ({n_fire} fire station(s), {n_police} police, "
+                    f"{n_hosp} hospital(s), {n_mkt} supermarket(s) found nearby)"),
         "asset_id": new_asset["asset_id"],
         "nearby_resources": {
             "fire_stations": new_asset["nearby_fire_stations"],
+            "police":        new_asset["nearby_police"],
             "hospitals":     new_asset["nearby_hospitals"],
             "supermarkets":  new_asset["nearby_supermarkets"],
         },
@@ -3479,81 +3483,302 @@ def _nearest_airport(lat, lon):
 
 def _fetch_nearby_resources(lat: float, lon: float, radius_m: int = 5000) -> dict:
     """
-    Query OpenStreetMap Overpass API for fire stations, hospitals, and supermarkets
-    within `radius_m` metres of (lat, lon).
-    Returns dict with keys: fire_stations, hospitals, supermarkets — each a list of dicts.
+    Find nearby emergency resources using multiple data sources:
+      1. OpenStreetMap Overpass — spatial discovery (what is near the coordinates)
+      2. Nominatim reverse geocode — fills in street addresses when OSM tags are sparse
+      3. CMS NPI Registry — authoritative US hospital/clinic names, addresses, and phone numbers
+    Returns dict with keys: fire_stations, police, hospitals, supermarkets.
     Never raises; returns empty lists on any error.
     """
-    query = f"""
-[out:json][timeout:20];
-(
-  node["amenity"="fire_station"](around:{radius_m},{lat},{lon});
-  way["amenity"="fire_station"](around:{radius_m},{lat},{lon});
-  node["amenity"="hospital"](around:{radius_m},{lat},{lon});
-  way["amenity"="hospital"](around:{radius_m},{lat},{lon});
-  node["shop"="supermarket"](around:{radius_m},{lat},{lon});
-  way["shop"="supermarket"](around:{radius_m},{lat},{lon});
-);
-out center;
-"""
-    result = {"fire_stations": [], "hospitals": [], "supermarkets": []}
-    try:
-        resp = requests.post(
-            "https://overpass-api.de/api/interpreter",
-            data={"data": query},
-            timeout=25,
-            headers={"User-Agent": "FPREN/1.0"},
-        )
-        resp.raise_for_status()
-        elements = resp.json().get("elements", [])
-    except Exception:
-        return result
+    import math
+    import requests
+    import time
 
-    import math as _math
+    _NOMINATIM_UA = "FPREN/1.0 (fpren@ufl.edu)"
+
+    # ── helpers ──────────────────────────────────────────────────────────────
 
     def _dist_km(elat, elon):
         dlat = (elat - lat) * math.pi / 180
         dlon = (elon - lon) * math.pi / 180
-        a = math.sin(dlat/2)**2 + math.cos(lat*math.pi/180)*math.cos(elat*math.pi/180)*math.sin(dlon/2)**2
-        return round(6371 * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a)), 3)
+        a = (math.sin(dlat/2)**2
+             + math.cos(lat*math.pi/180) * math.cos(elat*math.pi/180)
+             * math.sin(dlon/2)**2)
+        return round(6371 * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a)), 2)
 
-    seen = set()
+    def _extract_phone(tags):
+        for key in ("phone", "contact:phone", "contact:mobile",
+                    "phone:en", "emergency:phone", "telephone",
+                    "phone_1", "mobile"):
+            v = tags.get(key, "").strip()
+            if v:
+                return v
+        return ""
+
+    def _extract_address(tags):
+        full = tags.get("addr:full", "").strip()
+        if full:
+            return full
+        parts = [
+            tags.get("addr:housenumber", "").strip(),
+            tags.get("addr:street", "").strip(),
+            tags.get("addr:city", "").strip(),
+            tags.get("addr:state", "").strip(),
+            tags.get("addr:postcode", "").strip(),
+        ]
+        built = ", ".join(p for p in parts if p)
+        if not built:
+            city  = tags.get("addr:city", "").strip()
+            state = tags.get("addr:state", "").strip()
+            built = ", ".join(p for p in [city, state] if p)
+        return built
+
+    def _nominatim_reverse(rlat, rlon):
+        """Reverse geocode a coordinate to a street address via Nominatim."""
+        try:
+            r = requests.get(
+                "https://nominatim.openstreetmap.org/reverse",
+                params={"lat": rlat, "lon": rlon, "format": "jsonv2"},
+                headers={"User-Agent": _NOMINATIM_UA},
+                timeout=8,
+            )
+            if r.status_code != 200:
+                return ""
+            addr = r.json().get("address", {})
+            num    = addr.get("house_number", "").strip()
+            street = addr.get("road", "").strip()
+            city   = (addr.get("city") or addr.get("town") or addr.get("village", "")).strip()
+            state  = addr.get("state", "").strip()
+            pcode  = addr.get("postcode", "").strip()
+            street_full = f"{num} {street}".strip() if num else street
+            return ", ".join(p for p in [street_full, city, state, pcode] if p)
+        except Exception:
+            return ""
+
+    # ── Step 1: OSM Overpass — spatial discovery ───────────────────────────
+
+    police_r = max(radius_m, 10000)
+    query = f"""
+[out:json][timeout:25];
+(
+  node["amenity"="fire_station"](around:{radius_m},{lat},{lon});
+  way["amenity"="fire_station"](around:{radius_m},{lat},{lon});
+  node["amenity"="police"](around:{police_r},{lat},{lon});
+  way["amenity"="police"](around:{police_r},{lat},{lon});
+  node["amenity"="hospital"](around:{radius_m},{lat},{lon});
+  way["amenity"="hospital"](around:{radius_m},{lat},{lon});
+  node["amenity"="clinic"](around:{radius_m},{lat},{lon});
+  way["amenity"="clinic"](around:{radius_m},{lat},{lon});
+  node["amenity"="doctors"](around:{radius_m},{lat},{lon});
+  node["shop"="supermarket"](around:{radius_m},{lat},{lon});
+  way["shop"="supermarket"](around:{radius_m},{lat},{lon});
+  node["shop"="grocery"](around:{radius_m},{lat},{lon});
+);
+out center tags;
+"""
+    result = {"fire_stations": [], "police": [], "hospitals": [], "supermarkets": []}
+    _overpass_mirrors = [
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.openstreetmap.ru/api/interpreter",
+    ]
+    elements = []
+    for _mirror in _overpass_mirrors:
+        try:
+            resp = requests.post(
+                _mirror,
+                data={"data": query},
+                timeout=30,
+                headers={"User-Agent": _NOMINATIM_UA},
+            )
+            resp.raise_for_status()
+            elements = resp.json().get("elements", [])
+            break
+        except Exception:
+            continue
+
+    seen: dict[str, set] = {k: set() for k in result}
     for el in elements:
         tags = el.get("tags", {})
-        # For ways, Overpass returns a "center" object
         elat = el.get("lat") or (el.get("center") or {}).get("lat")
         elon = el.get("lon") or (el.get("center") or {}).get("lon")
         if elat is None or elon is None:
             continue
-        name = tags.get("name") or tags.get("operator") or "Unnamed"
-        key  = name.lower().strip()
-        if key in seen:
-            continue
-        seen.add(key)
-        phone  = tags.get("phone") or tags.get("contact:phone") or ""
-        addr   = ", ".join(filter(None, [
-            tags.get("addr:housenumber", ""),
-            tags.get("addr:street", ""),
-            tags.get("addr:city", ""),
-        ]))
-        entry = {
-            "name":     name,
-            "address":  addr,
-            "phone":    phone,
-            "lat":      elat,
-            "lon":      elon,
-            "dist_km":  _dist_km(elat, elon),
-        }
         amenity = tags.get("amenity", "")
         shop    = tags.get("shop", "")
         if amenity == "fire_station":
-            result["fire_stations"].append(entry)
-        elif amenity == "hospital":
-            result["hospitals"].append(entry)
-        elif shop == "supermarket":
-            result["supermarkets"].append(entry)
+            cat = "fire_stations"
+        elif amenity == "police":
+            cat = "police"
+        elif amenity in ("hospital", "clinic", "doctors"):
+            cat = "hospitals"
+        elif shop in ("supermarket", "grocery"):
+            cat = "supermarkets"
+        else:
+            continue
+        name = (tags.get("name") or tags.get("operator")
+                or tags.get("brand") or "Unnamed").strip()
+        key = name.lower()
+        if key in seen[cat]:
+            continue
+        seen[cat].add(key)
+        result[cat].append({
+            "name":    name,
+            "address": _extract_address(tags),
+            "phone":   _extract_phone(tags),
+            "lat":     elat,
+            "lon":     elon,
+            "dist_km": _dist_km(elat, elon),
+            "subtype": amenity or shop,
+            "source":  "OSM",
+        })
 
-    # Sort each list by distance
+    # ── Step 2: Nominatim reverse geocode — fill missing addresses ─────────
+    # Rate limit: 1 request/second per Nominatim usage policy.
+    # Only call for items where OSM tags gave us no address at all.
+    # Nominatim rate limit: 1 req/sec. Cap per category to keep total latency
+    # under ~8 s (2 fire + 2 police + 1 origin + 2 hospital fallback = 7 calls max).
+
+    _NOMINATIM_PER_CAT = 2   # geocode at most the 2 closest items per category
+    _last_nominatim = 0.0
+
+    def _has_street_address(addr):
+        """True only if addr looks like a real street address (has digits and a comma)."""
+        return bool(addr) and ("," in addr) and any(c.isdigit() for c in addr)
+
+    def _rate_limited_geocode(item):
+        """Apply Nominatim reverse geocode to item; enforces 1-req/sec rate limit."""
+        nonlocal _last_nominatim
+        now = time.monotonic()
+        gap = now - _last_nominatim
+        if gap < 1.1:
+            time.sleep(1.1 - gap)
+        addr = _nominatim_reverse(item["lat"], item["lon"])
+        _last_nominatim = time.monotonic()
+        return addr
+
+    # Sort all categories by distance before enrichment so the budget is spent
+    # on the closest items first.
+    for k in result:
+        result[k].sort(key=lambda x: x["dist_km"])
+
+    for cat in ("fire_stations", "police"):  # hospitals handled separately by NPI
+        budget = _NOMINATIM_PER_CAT
+        for item in result[cat]:
+            if _has_street_address(item["address"]) or budget <= 0:
+                continue
+            addr = _rate_limited_geocode(item)
+            if addr:
+                item["address"] = addr
+                item["source"] = "OSM+Nominatim"
+            budget -= 1
+
+    # ── Step 3: CMS NPI Registry — hospital address + phone enrichment ─────
+    # The NPI registry (npiregistry.cms.hhs.gov) is a free US government API
+    # containing all registered healthcare providers with verified addresses
+    # and phone numbers. Query by city to enrich OSM hospital results.
+
+    def _get_npi_data(city_name, state_abbr="FL"):
+        """
+        Fetch organization-type NPI records for hospitals/clinics in the given
+        city. Returns dict keyed by lowercased name for fuzzy matching.
+        """
+        npi_index = {}
+        for taxonomy in ("hospital", "clinic", "urgent care"):
+            try:
+                r = requests.get(
+                    "https://npiregistry.cms.hhs.gov/api/",
+                    params={
+                        "version":              "2.1",
+                        "enumeration_type":     "NPI-2",  # organizations only
+                        "city":                 city_name,
+                        "state":                state_abbr,
+                        "taxonomy_description": taxonomy,
+                        "limit":                50,
+                    },
+                    timeout=10,
+                )
+                if r.status_code != 200:
+                    continue
+                for rec in r.json().get("results", []):
+                    org_name = rec["basic"].get("organization_name", "").strip()
+                    if not org_name:
+                        continue
+                    loc = next(
+                        (a for a in rec.get("addresses", [])
+                         if a.get("address_purpose") == "LOCATION"),
+                        {}
+                    )
+                    phone = loc.get("telephone_number", "").strip()
+                    num   = loc.get("address_1", "").strip()
+                    city  = loc.get("city", "").strip().title()
+                    st    = loc.get("state", "").strip()
+                    pcode = loc.get("postal_code", "")[:5]
+                    addr  = ", ".join(p for p in [num, city, st, pcode] if p)
+                    key   = org_name.lower()
+                    # Keep entry with more data if duplicate name
+                    if key not in npi_index or (not npi_index[key]["phone"] and phone):
+                        npi_index[key] = {"name": org_name, "phone": phone, "address": addr}
+            except Exception:
+                continue
+        return npi_index
+
+    def _name_tokens(s):
+        """Lower-cased significant words (len >= 4) for fuzzy matching."""
+        return {w for w in s.lower().split() if len(w) >= 4}
+
+    if result["hospitals"]:
+        # One Nominatim call to get the city name for the NPI query
+        now = time.monotonic()
+        gap = now - _last_nominatim
+        if gap < 1.1:
+            time.sleep(1.1 - gap)
+        origin_addr = _nominatim_reverse(lat, lon)
+        _last_nominatim = time.monotonic()
+
+        # Parse city out of "123 Main St, Gainesville, Florida, 32601"
+        city_name = "Unknown"
+        if origin_addr:
+            parts = [p.strip() for p in origin_addr.split(",")]
+            # city is usually the second part (after street)
+            if len(parts) >= 2:
+                city_name = parts[1].strip()
+
+        npi_index = _get_npi_data(city_name) if city_name != "Unknown" else {}
+
+        for item in result["hospitals"]:
+            name_lower = item["name"].lower()
+            # 1. Exact name match
+            match = npi_index.get(name_lower)
+            if not match:
+                # 2. Substring or significant-token overlap
+                item_tokens = _name_tokens(item["name"])
+                for npi_key, npi_val in npi_index.items():
+                    npi_tokens = _name_tokens(npi_key)
+                    overlap = item_tokens & npi_tokens
+                    if overlap and (len(overlap) / max(len(item_tokens), 1)) >= 0.5:
+                        match = npi_val
+                        break
+            if match:
+                if match.get("phone") and not item["phone"]:
+                    item["phone"] = match["phone"]
+                if match.get("address") and not item["address"]:
+                    item["address"] = match["address"]
+                item["source"] = "OSM+NPI"
+
+        # Nominatim fallback for hospitals still missing a street address after NPI
+        hosp_budget = _NOMINATIM_PER_CAT
+        for item in result["hospitals"]:
+            if _has_street_address(item["address"]) or hosp_budget <= 0:
+                continue
+            addr = _rate_limited_geocode(item)
+            if addr:
+                item["address"] = addr
+                src = item.get("source", "OSM")
+                item["source"] = src if "Nominatim" in src else src + "+Nominatim"
+            hosp_budget -= 1
+
+    # ── Sort by distance and return ───────────────────────────────────────
     for k in result:
         result[k].sort(key=lambda x: x["dist_km"])
 
@@ -3564,7 +3789,8 @@ out center;
 def api_lookup_nearby_resources():
     """
     GET /api/lookup/nearby-resources?lat=29.65&lon=-82.33&radius_m=5000
-    Returns nearest fire stations, hospitals, and supermarkets via OpenStreetMap.
+    Returns nearest fire stations, police, hospitals, and supermarkets.
+    Data sources: OSM Overpass (spatial), Nominatim (address enrichment), CMS NPI (hospital phones).
     """
     try:
         lat      = float(request.args["lat"])
@@ -3572,7 +3798,10 @@ def api_lookup_nearby_resources():
         radius_m = int(request.args.get("radius_m", 5000))
     except (KeyError, ValueError):
         return jsonify({"ok": False, "message": "lat and lon are required numeric params"}), 400
-    resources = _fetch_nearby_resources(lat, lon, radius_m)
+    try:
+        resources = _fetch_nearby_resources(lat, lon, radius_m)
+    except Exception as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 500
     return jsonify({"ok": True, "radius_m": radius_m, **resources})
 
 

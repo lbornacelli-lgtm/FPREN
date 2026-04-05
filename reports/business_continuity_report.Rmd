@@ -26,6 +26,7 @@ params:
   mongo_uri: "mongodb://localhost:27017/"
   days_back: 30
   other_assets_json: "[]"
+  profession: "General"
 ---
 
 ```{r setup, include=FALSE}
@@ -448,6 +449,79 @@ if (nrow(traffic_on_evac_routes) > 0) {
 }
 ```
 
+## Waze Accident Hotspots Near Evacuation Corridors
+
+```{r waze-evac-hotspots, results='asis'}
+haversine_km <- function(lat1, lon1, lat2, lon2) {
+  R <- 6371
+  dl <- (lat2 - lat1) * pi / 180
+  dn <- (lon2 - lon1) * pi / 180
+  a  <- sin(dl/2)^2 + cos(lat1*pi/180) * cos(lat2*pi/180) * sin(dn/2)^2
+  round(R * 2 * atan2(sqrt(a), sqrt(1 - a)), 2)
+}
+CORRIDOR_KM <- 15
+
+waze_col     <- safe_mongo("waze_alerts")
+waze_jam_col <- safe_mongo("waze_jams")
+cutoff_ms    <- as.numeric(Sys.time() - 6 * 3600) * 1000
+
+waze_accidents <- tryCatch({
+  if (is.null(waze_col)) stop("no connection")
+  q <- sprintf('{"type":"ACCIDENT","pub_millis":{"$gte":%s}}', cutoff_ms)
+  r <- waze_col$find(q, fields = '{"lat":1,"lon":1,"street":1,"city":1,"subtype":1,"reliability":1,"_id":0}')
+  waze_col$disconnect()
+  r
+}, error = function(e) {
+  tryCatch(waze_col$disconnect(), error = function(e2) NULL)
+  data.frame()
+})
+
+waze_jams <- tryCatch({
+  if (is.null(waze_jam_col)) stop("no connection")
+  q <- sprintf('{"level":{"$gte":3},"pub_millis":{"$gte":%s}}', cutoff_ms)
+  r <- waze_jam_col$find(q, fields = '{"lat":1,"lon":1,"street":1,"city":1,"level":1,"delay_sec":1,"speed_kmh":1,"_id":0}')
+  waze_jam_col$disconnect()
+  r
+}, error = function(e) {
+  tryCatch(waze_jam_col$disconnect(), error = function(e2) NULL)
+  data.frame()
+})
+
+filter_near <- function(df, lat0, lon0, km) {
+  if (nrow(df) == 0 || !"lat" %in% names(df)) return(data.frame())
+  df$dist_km <- mapply(haversine_km, lat0, lon0, df$lat, df$lon)
+  df[df$dist_km <= km, ]
+}
+
+near_acc  <- filter_near(waze_accidents, params$lat, params$lon, CORRIDOR_KM)
+near_jams <- filter_near(waze_jams,      params$lat, params$lon, CORRIDOR_KM)
+
+if (nrow(near_acc) == 0 && nrow(near_jams) == 0) {
+  cat(paste0("> No Waze accidents or heavy jams within ", CORRIDOR_KM,
+             " km of this asset in the last 6 hours.\n"))
+} else {
+  if (nrow(near_acc) > 0) {
+    cat("**Accidents near evacuation corridors (last 6 h):**\n\n")
+    acc_d <- near_acc %>% arrange(dist_km) %>%
+      select(any_of(c("street","city","subtype","reliability","dist_km"))) %>% head(10)
+    if ("dist_km" %in% names(acc_d)) acc_d$dist_km <- paste0(round(acc_d$dist_km,1)," km")
+    print(kable(acc_d, booktabs=TRUE, linesep="") %>%
+      kable_styling(latex_options=c("hold_position","striped"), full_width=FALSE) %>%
+      column_spec(1, width="5cm"))
+  }
+  if (nrow(near_jams) > 0) {
+    cat("\n**Heavy traffic jams (Waze level 3+) near evacuation corridors:**\n\n")
+    jam_d <- near_jams %>% arrange(dist_km) %>%
+      select(any_of(c("street","city","level","delay_sec","speed_kmh","dist_km"))) %>% head(10)
+    if ("delay_sec" %in% names(jam_d))
+      jam_d$delay_sec <- paste0(round(jam_d$delay_sec/60,0)," min delay")
+    if ("dist_km" %in% names(jam_d)) jam_d$dist_km <- paste0(round(jam_d$dist_km,1)," km")
+    print(kable(jam_d, booktabs=TRUE, linesep="") %>%
+      kable_styling(latex_options=c("hold_position","striped"), full_width=FALSE))
+  }
+}
+```
+
 \newpage
 
 # Nearest Airport Status
@@ -706,28 +780,250 @@ kable(timeline, booktabs = TRUE, linesep = "",
 # Emergency Contacts
 
 ```{r emergency-contacts, results='asis'}
+# ── Core FPREN / UF contacts ─────────────────────────────────────────────────
 contacts <- data.frame(
   Role = c("FPREN Administrator","UF IT Help Desk","UF Emergency Management",
-           "Alachua County Emergency Mgmt","FL Division of Emergency Mgmt",
-           "National Hurricane Center","NWS Jacksonville (FL alerts)"),
-  Contact = c(
-    "Lawrence Bornace -- lawrence.bornace@ufl.edu",
-    "(352) 392-4357 -- helpdesk@ufl.edu",
-    "(352) 392-1111 -- ufl.edu/emergency",
-    "(352) 264-6500",
-    "(850) 413-9969 -- floridadisaster.org",
-    "(305) 229-4470 -- nhc.noaa.gov",
-    "(904) 741-4311 -- weather.gov/jax"
+           "UF Police Department","National Hurricane Center",
+           "NWS Jacksonville (FL alerts)","NOAA Weather Radio"),
+  Address = c(
+    "Weimer Hall, 1885 Stadium Rd, Gainesville FL 32611",
+    "132 Hub, University of Florida, Gainesville FL 32611",
+    "222 Tigert Hall, Gainesville FL 32611",
+    "1555 Museum Rd, Gainesville FL 32611",
+    "11691 SW 17th St, Miami FL 33165",
+    "4 Aviation Center Pkwy, Jacksonville FL 32218",
+    "1325 East-West Hwy, Silver Spring MD 20910"
+  ),
+  Phone_Email = c(
+    "lawrence.bornace@ufl.edu",
+    "(352) 392-4357 | helpdesk@ufl.edu",
+    "(352) 392-1111 | ufl.edu/emergency",
+    "(352) 392-1111",
+    "(305) 229-4470 | nhc.noaa.gov",
+    "(904) 741-4311 | weather.gov/jax",
+    "1610 kHz / WXL-52"
   ),
   stringsAsFactors = FALSE
 )
-kable(contacts, col.names = c("Role / Organization","Contact"),
+kable(contacts, col.names = c("Role / Organization","Address","Phone / Contact"),
       booktabs = TRUE, linesep = "") %>%
-  kable_styling(latex_options = c("hold_position","striped"), full_width = FALSE) %>%
-  column_spec(1, bold = TRUE, color = FPREN_BLUE, width = "6cm") %>%
-  column_spec(2, width = "9cm")
+  kable_styling(latex_options = c("hold_position","striped","scale_down"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE, color = FPREN_BLUE, width = "4.5cm") %>%
+  column_spec(2, width = "5.5cm") %>%
+  column_spec(3, width = "4cm")
 ```
 
+## County Emergency Management & Law Enforcement
+
+```{r county-em-contacts, results='asis'}
+county_em <- data.frame(
+  Agency = c(
+    "Alachua County Emergency Management",
+    "Leon County Emergency Management",
+    "Hillsborough County Emergency Management",
+    "Miami-Dade County Emergency Management",
+    "Orange County Emergency Management",
+    "Duval County Emergency Management",
+    "Pinellas County Emergency Management",
+    "Palm Beach County Emergency Management",
+    "Broward County Emergency Management"
+  ),
+  Address = c(
+    "420 NE 1st St, Gainesville FL 32601",
+    "1301 Rankin Ave, Tallahassee FL 32308",
+    "2701 N 50th St, Tampa FL 33605",
+    "9300 NW 41st St, Doral FL 33178",
+    "6590 Amory Ct, Winter Park FL 32792",
+    "515 N Julia St, Jacksonville FL 32202",
+    "400 S Fort Harrison Ave, Clearwater FL 33756",
+    "20 S Military Trail, West Palm Beach FL 33415",
+    "201 NW 84th Ave, Plantation FL 33324"
+  ),
+  Phone = c(
+    "(352) 264-6500","(850) 606-5000","(813) 272-6900",
+    "(305) 468-5400","(407) 836-9140","(904) 630-4000",
+    "(727) 464-3800","(561) 712-6400","(954) 831-3900"
+  ),
+  stringsAsFactors = FALSE
+)
+kable(county_em, booktabs = TRUE, linesep = "") %>%
+  kable_styling(latex_options = c("hold_position","striped","scale_down"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE, width = "5cm") %>%
+  column_spec(2, width = "5.5cm") %>%
+  column_spec(3, width = "2.5cm")
+```
+
+## State & Federal Agencies
+
+```{r state-agencies, results='asis'}
+state_ag <- data.frame(
+  Agency = c(
+    "FL Division of Emergency Management",
+    "FL Dept of Law Enforcement (FDLE)",
+    "FL Dept of Transportation — District 2",
+    "FL National Guard Joint Operations Center",
+    "FL Dept of Health — Emergency Operations",
+    "FEMA Region 4 (Southeast)",
+    "FBI Tampa Field Office",
+    "American Red Cross — FL"
+  ),
+  Address = c(
+    "2555 Shumard Oak Blvd, Tallahassee FL 32399",
+    "2331 Phillips Rd, Tallahassee FL 32308",
+    "1109 S Marion Ave, Lake City FL 32025",
+    "82 Marine St, St Augustine FL 32084",
+    "4052 Bald Cypress Way, Tallahassee FL 32399",
+    "3003 Chamblee Tucker Rd, Atlanta GA 30341",
+    "5525 W Gray St, Tampa FL 33609",
+    "6100 Lake Ellenor Dr, Orlando FL 32809"
+  ),
+  Phone = c(
+    "(850) 413-9969","(850) 410-7000","(386) 961-7800",
+    "(904) 823-0100","(850) 245-4444","(770) 220-5200",
+    "(813) 253-1000","(407) 894-4141"
+  ),
+  stringsAsFactors = FALSE
+)
+kable(state_ag, booktabs = TRUE, linesep = "") %>%
+  kable_styling(latex_options = c("hold_position","striped","scale_down"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE, width = "5.5cm") %>%
+  column_spec(2, width = "5cm") %>%
+  column_spec(3, width = "2.5cm")
+```
+
+```{r role-specific-contacts, results='asis'}
+prof <- params$profession
+
+role_contacts <- list(
+  "Broadcast Engineer" = data.frame(
+    Agency  = c("FCC Emergency Communications","Society of Broadcast Engineers Ch.28",
+                "NPR Emergency Operations","EAS LPFM Emergency Coordinator",
+                "UF College of Journalism (WUFT)"),
+    Contact = c("(888) 225-5322 | fcc.gov",
+                "sbe.org/chapters/28",
+                "(202) 513-2000",
+                "Contact via state EAS plan",
+                "(352) 392-0466 | wuft.org"),
+    stringsAsFactors = FALSE),
+  "Broadcast Administrator" = data.frame(
+    Agency  = c("FCC Emergency Desk","Corporation for Public Broadcasting",
+                "NPR Newsdesk Emergency","UF Communications & Marketing"),
+    Contact = c("(888) 225-5322 | fcc.gov",
+                "(202) 879-9600",
+                "(202) 513-2000",
+                "(352) 392-0186"),
+    stringsAsFactors = FALSE),
+  "County Emergency Manager" = data.frame(
+    Agency  = c("FL DEM Director","FL Emergency Alert Coordinator",
+                "FEMA Individual Assistance","FEMA National Response Coordination"),
+    Contact = c("(850) 413-9969 | floridadisaster.org",
+                "(850) 413-9900",
+                "(800) 621-3362",
+                "(202) 646-4600"),
+    stringsAsFactors = FALSE),
+  "Police Chief" = data.frame(
+    Agency  = c("FL Dept of Law Enforcement","Florida Highway Patrol",
+                "FBI Crisis Response","ATF Jacksonville"),
+    Contact = c("(850) 410-7000",
+                "(850) 617-2000",
+                "(800) CALL-FBI",
+                "(904) 724-7330"),
+    stringsAsFactors = FALSE),
+  "EOC Coordinator" = data.frame(
+    Agency  = c("FL State EOC (24/7)","FEMA Region 4 EOC","National Emergency Management Association",
+                "FL Emergency Communications State Director"),
+    Contact = c("(850) 413-9900",
+                "(770) 220-5200",
+                "nema.org",
+                "(850) 413-9900"),
+    stringsAsFactors = FALSE),
+  "IT/Systems Administrator" = data.frame(
+    Agency  = c("UF IT Security (UFIT)","UF Network Operations Center",
+                "FL Digital Service (BITS)","CISA (Cybersecurity & Infrastructure)"),
+    Contact = c("(352) 273-1344 | security.it.ufl.edu",
+                "(352) 392-4357",
+                "(850) 577-0120",
+                "(888) 282-0870 | cisa.gov"),
+    stringsAsFactors = FALSE),
+  "Facility Manager" = data.frame(
+    Agency  = c("UF Facilities Services Emergency","GRU Emergency (power/gas)",
+                "Gainesville Regional Utilities","UF Environmental Health & Safety"),
+    Contact = c("(352) 392-1121",
+                "(352) 334-3400",
+                "(352) 334-3434",
+                "(352) 392-1591"),
+    stringsAsFactors = FALSE)
+)
+
+specific <- role_contacts[[prof]]
+if (!is.null(specific)) {
+  cat(paste0("\n## Role-Specific Contacts: ", prof, "\n\n"))
+  print(
+    kable(specific, booktabs = TRUE, linesep = "",
+          col.names = c("Agency / Organization","Phone / Contact")) %>%
+      kable_styling(latex_options = c("hold_position","striped"), full_width = FALSE) %>%
+      column_spec(1, bold = TRUE, color = FPREN_BLUE, width = "7cm") %>%
+      column_spec(2, width = "7cm")
+  )
+} else {
+  cat(paste0("> No role-specific contacts defined for: **", prof, "**.",
+             " Contact Alachua County Emergency Management at (352) 264-6500",
+             " and FL Division of Emergency Management at (850) 413-9969.\n"))
+}
+```
+
+
+\newpage
+
+# SMS Emergency Action Checklist
+
+Role-based action items for **`r params$profession`** across all emergency phases.
+These lists are also delivered as SMS blasts from the FPREN dashboard.
+
+```{r sms-checklist, results='asis'}
+sms_col <- safe_mongo("emergency_roles_config")
+
+get_todos_rmd <- function(role, phase) {
+  tryCatch({
+    if (is.null(sms_col)) return(character(0))
+    q <- sprintf('{"role":"%s","phase":"%s"}', gsub('"', '\\\\"', role), phase)
+    r <- sms_col$find(q, fields = '{"todos":1,"_id":0}')
+    if (nrow(r) == 0 || is.null(r$todos)) return(character(0))
+    t <- r$todos[[1]]
+    if (is.list(t)) unlist(t) else as.character(t)
+  }, error = function(e) character(0))
+}
+
+tb <- get_todos_rmd(params$profession, "before")
+td <- get_todos_rmd(params$profession, "during")
+ta <- get_todos_rmd(params$profession, "after")
+tryCatch(sms_col$disconnect(), error = function(e) NULL)
+
+if (length(tb) == 0 && length(td) == 0 && length(ta) == 0) {
+  cat(paste0("> No SMS action checklist defined for **", params$profession, "**.",
+             " Configure in the FPREN dashboard — Config tab > Emergency SMS.\n"))
+} else {
+  max_r <- max(length(tb), length(td), length(ta), 1)
+  pad   <- function(x, n) c(x, rep("", n - length(x)))
+  tb2 <- pad(tb, max_r); td2 <- pad(td, max_r); ta2 <- pad(ta, max_r)
+  check_df <- data.frame(
+    `Before Event` = ifelse(nchar(tb2)>0, paste0("[ ] ", tb2), ""),
+    `During Event` = ifelse(nchar(td2)>0, paste0("[ ] ", td2), ""),
+    `After Event`  = ifelse(nchar(ta2)>0, paste0("[ ] ", ta2), ""),
+    check.names    = FALSE, stringsAsFactors = FALSE
+  )
+  check_df <- check_df[rowSums(nchar(trimws(as.matrix(check_df))) > 0) > 0, ]
+  if (nrow(check_df) > 0) {
+    print(
+      kable(check_df, booktabs = TRUE, linesep = "",
+            col.names = c("Before Event","During Event","After Event")) %>%
+        kable_styling(latex_options = c("hold_position","striped","scale_down"),
+                      full_width = TRUE) %>%
+        column_spec(1:3, width = "5.5cm")
+    )
+  }
+}
+```
 
 \newpage
 

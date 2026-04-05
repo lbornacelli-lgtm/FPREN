@@ -689,6 +689,22 @@ ui <- tagList(
                 "Each registered user asset is addressable via SNMP OID.",
                 " Poll individual assets from your SNMP management station.")),
               DTOutput("tbl_snmp_asset_oids"))
+        ),
+        fluidRow(
+          box(
+            title = tagList(icon("exclamation-triangle"), " Offline / Unreachable SNMP Devices"),
+            width = 12, status = "danger", solidHeader = TRUE, collapsible = TRUE,
+            p(tags$small(
+              icon("info-circle"),
+              " SNMP devices registered to user assets that are offline, unreachable, or not yet checked.",
+              " Devices are ", tags$strong("never auto-polled"),
+              " — click ", tags$strong("Recheck"), " to test TCP connectivity once and store the result."
+            )),
+            actionButton("btn_snmp_offline_refresh", "Refresh List",
+                         class = "btn-sm btn-warning", icon = icon("sync")),
+            br(), br(),
+            uiOutput("snmp_offline_devices_ui")
+          )
         )
       ),
 
@@ -1392,6 +1408,7 @@ ui <- tagList(
                   )
                 ),
                 uiOutput("asset_nearby_panel"),
+                uiOutput("asset_snmp_devices_panel"),
                 fluidRow(
                   column(12,
                     div(style="margin-top:6px;",
@@ -6115,6 +6132,469 @@ server <- function(input, output, session) {
       tryCatch(col3$disconnect(), error=function(e2) NULL)
       nearby_refresh_rv(paste0("Error saving: ", conditionMessage(e)))
     })
+  })
+
+  # ── SNMP Device Management ─────────────────────────────────────────────────
+  snmp_device_rv     <- reactiveVal(0)   # triggers re-render on any device change
+  snmp_dev_status_rv <- reactiveVal("")
+  snmp_offline_rv    <- reactiveVal(0)
+
+  output$snmp_dev_status <- renderText({ snmp_dev_status_rv() })
+
+  # TCP reachability check — runs once, never loops
+  .check_snmp_reachability <- function(ip, port) {
+    port_int <- as.integer(port)
+    if (is.na(port_int) || port_int < 1 || port_int > 65535)
+      return(list(status = "error",
+                  message = paste0("Invalid port number: ", port)))
+    tryCatch({
+      con <- socketConnection(host = ip, port = port_int,
+                              timeout = 3, open = "r+", blocking = TRUE)
+      close(con)
+      list(status  = "online",
+           message = paste0("TCP connection to ", ip, ":", port_int, " succeeded"))
+    }, error = function(e) {
+      msg <- conditionMessage(e)
+      if (grepl("refused|ECONNREFUSED", msg, ignore.case = TRUE))
+        list(status  = "offline",
+             message = paste0("Port ", port_int, " actively refused on ", ip,
+                              " — host reachable but SNMP/service not listening"))
+      else if (grepl("timed out|ETIMEDOUT|timeout|EHOSTUNREACH|unreachable", msg,
+                     ignore.case = TRUE))
+        list(status  = "unreachable",
+             message = paste0("Timed out reaching ", ip, ":", port_int,
+                              " — host may be firewalled, powered off, or IP is wrong"))
+      else
+        list(status  = "error",
+             message = paste0("Cannot reach ", ip, ":", port_int, " — ", msg))
+    })
+  }
+
+  # Read-modify-write helper — updates snmp_devices inside a nested asset array
+  .rwm_snmp_devices <- function(uname, asset_id, modify_fn) {
+    col <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                    error = function(e) NULL)
+    if (is.null(col)) return(FALSE)
+    tryCatch({
+      u <- col$find(sprintf('{"username":"%s"}', uname),
+                    fields = '{"assets":1,"_id":0}')
+      if (nrow(u) == 0 || is.null(u$assets)) { col$disconnect(); return(FALSE) }
+      assets_raw <- u$assets[[1]]
+      .norm <- function(x)
+        if (is.data.frame(x) && nrow(x) > 0)
+          lapply(seq_len(nrow(x)), function(i) as.list(x[i, ]))
+        else if (is.list(x) && length(x) > 0) x else list()
+      assets_list <- .norm(assets_raw)
+      changed <- FALSE
+      for (ai in seq_along(assets_list)) {
+        if (isTRUE(as.character(assets_list[[ai]]$asset_id %||% "") == asset_id)) {
+          devs <- .norm(assets_list[[ai]]$snmp_devices %||% list())
+          assets_list[[ai]]$snmp_devices <- modify_fn(devs)
+          changed <- TRUE
+          break
+        }
+      }
+      if (!changed) { col$disconnect(); return(FALSE) }
+      col$update(sprintf('{"username":"%s"}', uname),
+                 sprintf('{"$set":{"assets":%s}}',
+                         jsonlite::toJSON(assets_list, auto_unbox = TRUE)))
+      col$disconnect()
+      TRUE
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL)
+      FALSE
+    })
+  }
+
+  # Collect all offline/unreachable devices across all users
+  .get_offline_snmp_devices <- function() {
+    col <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                    error = function(e) NULL)
+    if (is.null(col)) return(list())
+    tryCatch({
+      users_data <- col$find('{}', fields = '{"username":1,"assets":1,"_id":0}')
+      col$disconnect()
+      rows <- list()
+      .norm <- function(x)
+        if (is.data.frame(x) && nrow(x) > 0)
+          lapply(seq_len(nrow(x)), function(i) as.list(x[i, ]))
+        else if (is.list(x) && length(x) > 0) x else list()
+      for (i in seq_len(nrow(users_data))) {
+        uname      <- as.character(users_data$username[i])
+        assets_raw <- users_data$assets[[i]]
+        if (is.null(assets_raw)) next
+        for (asset in .norm(assets_raw)) {
+          for (dev in .norm(asset$snmp_devices %||% list())) {
+            st <- as.character(dev$status %||% "unknown")
+            if (st != "online") {
+              rows[[length(rows) + 1]] <- list(
+                username     = uname,
+                asset_name   = as.character(asset$asset_name %||% ""),
+                asset_id     = as.character(asset$asset_id   %||% ""),
+                device_id    = as.character(dev$device_id    %||% ""),
+                label        = as.character(dev$label        %||% ""),
+                ip           = as.character(dev$ip           %||% ""),
+                port         = as.integer(dev$port           %||% 161L),
+                community    = as.character(dev$community    %||% "public"),
+                status       = st,
+                message      = as.character(dev$status_message %||% "Not yet checked"),
+                last_checked = as.character(dev$last_checked   %||% "Never")
+              )
+            }
+          }
+        }
+      }
+      rows
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL)
+      list()
+    })
+  }
+
+  # ── SNMP Devices sub-panel (shown under selected asset in Config tab) ────────
+  output$asset_snmp_devices_panel <- renderUI({
+    sel         <- input$user_assets_table_rows_selected
+    uname       <- input$asset_mgmt_user
+    asset_mgmt_rv()
+    snmp_device_rv()
+    if (is.null(sel) || length(sel) == 0 ||
+        is.null(uname) || nchar(uname) == 0) return(NULL)
+
+    col <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                    error = function(e) NULL)
+    if (is.null(col))
+      return(div(class = "alert alert-danger", "Database unavailable"))
+
+    asset <- tryCatch({
+      u <- col$find(sprintf('{"username":"%s"}', uname),
+                    fields = '{"assets":1,"_id":0}')
+      col$disconnect()
+      if (nrow(u) == 0 || is.null(u$assets)) return(NULL)
+      adf <- u$assets[[1]]
+      if (is.data.frame(adf) && nrow(adf) >= sel) as.list(adf[sel, ]) else NULL
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL); NULL
+    })
+    if (is.null(asset)) return(NULL)
+
+    asset_id   <- as.character(asset$asset_id   %||% "")
+    asset_name <- as.character(asset$asset_name %||% "")
+
+    .norm <- function(x)
+      if (is.data.frame(x) && nrow(x) > 0)
+        lapply(seq_len(nrow(x)), function(i) as.list(x[i, ]))
+      else if (is.list(x) && length(x) > 0) x else list()
+    devices <- .norm(asset$snmp_devices %||% list())
+
+    # Status badge colour/icon helpers
+    .st_color <- function(st) switch(st,
+      online = "#27ae60", offline = "#e74c3c",
+      unreachable = "#e67e22", error = "#c0392b", "#7f8c8d")
+    .st_icon <- function(st) switch(st,
+      online = "check-circle", offline = "times-circle",
+      unreachable = "exclamation-circle", error = "ban", "question-circle")
+
+    dev_rows <- if (length(devices) == 0) {
+      list(div(class = "alert alert-info",
+               style = "margin-bottom:8px; font-size:13px;",
+               icon("network-wired"), " No SNMP devices registered for this asset."))
+    } else {
+      list(
+        tags$table(
+          class = "table table-condensed table-bordered",
+          style = "font-size:13px; margin-bottom:8px;",
+          tags$thead(
+            tags$tr(
+              tags$th("Label"), tags$th("IP : Port"), tags$th("Community"),
+              tags$th("Status"), tags$th("Last Checked"),
+              tags$th(style = "max-width:240px;", "Message"), tags$th("Actions")
+            )
+          ),
+          tags$tbody(
+            lapply(devices, function(dev) {
+              st     <- as.character(dev$status %||% "unknown")
+              dev_id <- as.character(dev$device_id %||% "")
+              col_   <- .st_color(st)
+              ico_   <- .st_icon(st)
+              chk_js <- sprintf(
+                "Shiny.setInputValue('snmp_dev_action',{action:'check',device_id:'%s',asset_id:'%s',username:'%s'},{priority:'event'})",
+                dev_id, asset_id, uname)
+              del_js <- sprintf(
+                "Shiny.setInputValue('snmp_dev_action',{action:'delete',device_id:'%s',asset_id:'%s',username:'%s'},{priority:'event'})",
+                dev_id, asset_id, uname)
+              tags$tr(
+                tags$td(tags$strong(as.character(dev$label %||% ""))),
+                tags$td(tags$code(paste0(dev$ip %||% "", ":", dev$port %||% ""))),
+                tags$td(tags$code(as.character(dev$community %||% "public"))),
+                tags$td(tags$span(style = paste0("color:", col_, "; font-weight:600;"),
+                  icon(ico_), " ", toupper(st))),
+                tags$td(tags$small(style = "color:#888;",
+                  as.character(dev$last_checked %||% "Never"))),
+                tags$td(tags$small(style = "color:#555; word-break:break-word;",
+                  as.character(dev$status_message %||% "—"))),
+                tags$td(
+                  tags$button("Check", class = "btn btn-xs btn-info",
+                              style = "margin-right:4px;", onclick = chk_js),
+                  tags$button("Delete", class = "btn btn-xs btn-danger",
+                              onclick = del_js)
+                )
+              )
+            })
+          )
+        )
+      )
+    }
+
+    tagList(
+      hr(),
+      h5(icon("network-wired"), paste0(" SNMP Devices — ", asset_name)),
+      tags$p(tags$small(style = "color:#666;",
+        icon("info-circle"),
+        " Attach SNMP-accessible devices (switches, routers, servers, APs) to this asset.",
+        " Use ", tags$strong("Check"), " to test TCP reachability.",
+        tags$span(style = "color:#c0392b; font-weight:600;",
+          " Devices are never auto-polled"),
+        " — each check runs once and stores the result."
+      )),
+      dev_rows,
+      # ── Add device form ─────────────────────────────────────────────────────
+      tags$div(
+        style = paste0("background:#f8f9fa; border:1px solid #dee2e6;",
+                       " border-radius:4px; padding:12px 12px 4px; margin-top:4px;"),
+        tags$h6(icon("plus"), " Add SNMP Device"),
+        fluidRow(
+          column(3, textInput("snmp_dev_label", "Label",
+                              placeholder = "Core Switch", width = "100%")),
+          column(3, textInput("snmp_dev_ip", "IP Address / Hostname",
+                              placeholder = "192.168.1.1", width = "100%")),
+          column(2, numericInput("snmp_dev_port", "Port", value = 161,
+                                 min = 1, max = 65535, width = "100%")),
+          column(3, textInput("snmp_dev_community", "Community String",
+                              placeholder = "public", width = "100%")),
+          column(1, br(),
+            actionButton("btn_snmp_add_device", "Add",
+                         class = "btn-success btn-sm", icon = icon("plus")))
+        ),
+        tags$small(style = "color:#888;",
+          icon("info-circle"),
+          " A TCP connection to the specified IP:Port will be attempted immediately to verify reachability.")
+      ),
+      br(),
+      verbatimTextOutput("snmp_dev_status")
+    )
+  })
+
+  # ── Add SNMP device ─────────────────────────────────────────────────────────
+  observeEvent(input$btn_snmp_add_device, {
+    if (!isTRUE(auth_rv$role == "admin")) {
+      snmp_dev_status_rv("Admin role required."); return()
+    }
+    uname <- input$asset_mgmt_user
+    sel   <- input$user_assets_table_rows_selected
+    if (is.null(uname) || nchar(uname) == 0 || is.null(sel) || length(sel) == 0) {
+      snmp_dev_status_rv("Select a user and asset row first."); return()
+    }
+    ip        <- trimws(input$snmp_dev_ip       %||% "")
+    port      <- input$snmp_dev_port            %||% 161
+    label     <- trimws(input$snmp_dev_label    %||% "")
+    community <- trimws(input$snmp_dev_community %||% "public")
+
+    if (nchar(ip) == 0) { snmp_dev_status_rv("IP address or hostname is required."); return() }
+
+    snmp_dev_status_rv(paste0("Checking connectivity to ", ip, ":", port, " ..."))
+    check <- .check_snmp_reachability(ip, port)
+
+    # Resolve asset_id for selected row
+    col <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                    error = function(e) NULL)
+    if (is.null(col)) { snmp_dev_status_rv("Database unavailable."); return() }
+    asset_id <- tryCatch({
+      u <- col$find(sprintf('{"username":"%s"}', uname),
+                    fields = '{"assets":1,"_id":0}')
+      col$disconnect()
+      if (nrow(u) == 0 || is.null(u$assets)) return(NULL)
+      adf <- u$assets[[1]]
+      if (is.data.frame(adf) && nrow(adf) >= sel)
+        as.character(adf$asset_id[sel]) else NULL
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL); NULL
+    })
+    if (is.null(asset_id)) {
+      snmp_dev_status_rv("Could not identify selected asset."); return()
+    }
+
+    new_dev <- list(
+      device_id      = paste0(sample(c(letters, LETTERS, 0:9), 12, replace = TRUE),
+                              collapse = ""),
+      label          = if (nchar(label) == 0) paste0(ip, ":", port) else label,
+      ip             = ip,
+      port           = as.integer(port),
+      community      = if (nchar(community) == 0) "public" else community,
+      status         = check$status,
+      status_message = check$message,
+      last_checked   = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+      added_at       = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+    )
+
+    ok <- .rwm_snmp_devices(uname, asset_id, function(devs) {
+      c(devs, list(new_dev))
+    })
+
+    if (ok) {
+      st_label <- switch(check$status,
+        online = "ONLINE", offline = "OFFLINE",
+        unreachable = "UNREACHABLE", "ERROR")
+      snmp_dev_status_rv(paste0(
+        "Device '", new_dev$label, "' added. Initial check: ",
+        st_label, " — ", check$message))
+      snmp_device_rv(snmp_device_rv() + 1)
+    } else {
+      snmp_dev_status_rv("Failed to save device to database.")
+    }
+  })
+
+  # ── Check / Delete device (JS onclick from both Config tab and Alerts tab) ──
+  observeEvent(input$snmp_dev_action, {
+    if (!isTRUE(auth_rv$role == "admin")) return()
+    action    <- as.character(input$snmp_dev_action$action    %||% "")
+    device_id <- as.character(input$snmp_dev_action$device_id %||% "")
+    asset_id  <- as.character(input$snmp_dev_action$asset_id  %||% "")
+    uname     <- as.character(input$snmp_dev_action$username  %||% "")
+    if (nchar(device_id) == 0 || nchar(asset_id) == 0 || nchar(uname) == 0) return()
+
+    if (action == "delete") {
+      ok <- .rwm_snmp_devices(uname, asset_id, function(devs) {
+        Filter(function(d) !isTRUE(d$device_id == device_id), devs)
+      })
+      if (ok) {
+        snmp_dev_status_rv("Device removed.")
+        snmp_device_rv(snmp_device_rv() + 1)
+      } else {
+        snmp_dev_status_rv("Error removing device — check database connection.")
+      }
+
+    } else if (action == "check") {
+      # Fetch device IP/port from DB
+      col <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                      error = function(e) NULL)
+      if (is.null(col)) { snmp_dev_status_rv("Database unavailable."); return() }
+      dev_info <- tryCatch({
+        u <- col$find(sprintf('{"username":"%s"}', uname),
+                      fields = '{"assets":1,"_id":0}')
+        col$disconnect()
+        if (nrow(u) == 0 || is.null(u$assets)) return(NULL)
+        .norm <- function(x)
+          if (is.data.frame(x) && nrow(x) > 0)
+            lapply(seq_len(nrow(x)), function(i) as.list(x[i, ]))
+          else if (is.list(x) && length(x) > 0) x else list()
+        adf    <- u$assets[[1]]
+        a_list <- .norm(adf)
+        found  <- NULL
+        for (a in a_list) {
+          if (isTRUE(as.character(a$asset_id %||% "") == asset_id)) {
+            devs <- .norm(a$snmp_devices %||% list())
+            hits <- Filter(function(d) isTRUE(d$device_id == device_id), devs)
+            if (length(hits) > 0) { found <- hits[[1]]; break }
+          }
+        }
+        found
+      }, error = function(e) {
+        tryCatch(col$disconnect(), error = function(e2) NULL); NULL
+      })
+      if (is.null(dev_info)) { snmp_dev_status_rv("Device not found."); return() }
+
+      ip   <- as.character(dev_info$ip   %||% "")
+      port <- as.integer(dev_info$port   %||% 161L)
+      lbl  <- as.character(dev_info$label %||% paste0(ip, ":", port))
+      snmp_dev_status_rv(paste0("Checking ", lbl, " (", ip, ":", port, ") ..."))
+
+      check <- .check_snmp_reachability(ip, port)
+      now   <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+
+      ok <- .rwm_snmp_devices(uname, asset_id, function(devs) {
+        lapply(devs, function(d) {
+          if (isTRUE(d$device_id == device_id)) {
+            d$status         <- check$status
+            d$status_message <- check$message
+            d$last_checked   <- now
+          }
+          d
+        })
+      })
+
+      status_label <- switch(check$status,
+        online = "ONLINE", offline = "OFFLINE",
+        unreachable = "UNREACHABLE", "ERROR")
+      if (ok) {
+        snmp_dev_status_rv(paste0(
+          lbl, ": ", status_label, " — ", check$message))
+      } else {
+        snmp_dev_status_rv(paste0(
+          "Check completed (", status_label, ") but DB save failed."))
+      }
+      snmp_device_rv(snmp_device_rv() + 1)
+    }
+  })
+
+  # ── Offline SNMP Devices panel in Alerts tab ─────────────────────────────────
+  output$snmp_offline_devices_ui <- renderUI({
+    snmp_device_rv()
+    snmp_offline_rv()
+
+    rows <- .get_offline_snmp_devices()
+
+    if (length(rows) == 0) {
+      return(div(class = "alert alert-success", style = "font-size:13px;",
+        icon("check-circle"), " All registered SNMP devices are online, or none have been added yet."))
+    }
+
+    .st_color <- function(st) switch(st,
+      online = "#27ae60", offline = "#e74c3c",
+      unreachable = "#e67e22", error = "#c0392b", "#7f8c8d")
+    .st_icon <- function(st) switch(st,
+      online = "check-circle", offline = "times-circle",
+      unreachable = "exclamation-circle", error = "ban", "question-circle")
+
+    tags$table(
+      class = "table table-condensed table-bordered table-hover",
+      style = "font-size:13px;",
+      tags$thead(
+        tags$tr(
+          tags$th("User"), tags$th("Asset"), tags$th("Device"),
+          tags$th("IP : Port"), tags$th("Status"), tags$th("Last Checked"),
+          tags$th("Message"), tags$th("Action")
+        )
+      ),
+      tags$tbody(
+        lapply(rows, function(r) {
+          st    <- r$status
+          col_  <- .st_color(st)
+          ico_  <- .st_icon(st)
+          js_chk <- sprintf(
+            "Shiny.setInputValue('snmp_dev_action',{action:'check',device_id:'%s',asset_id:'%s',username:'%s'},{priority:'event'})",
+            r$device_id, r$asset_id, r$username)
+          tags$tr(
+            tags$td(tags$code(r$username)),
+            tags$td(r$asset_name),
+            tags$td(tags$strong(r$label)),
+            tags$td(tags$code(paste0(r$ip, ":", r$port))),
+            tags$td(tags$span(style = paste0("color:", col_, "; font-weight:600;"),
+              icon(ico_), " ", toupper(st))),
+            tags$td(tags$small(style = "color:#888;", r$last_checked)),
+            tags$td(tags$small(style = "color:#555; word-break:break-word;",
+              r$message)),
+            tags$td(
+              tags$button("Recheck", class = "btn btn-xs btn-warning",
+                          onclick = js_chk)
+            )
+          )
+        })
+      )
+    )
+  })
+
+  observeEvent(input$btn_snmp_offline_refresh, {
+    snmp_offline_rv(snmp_offline_rv() + 1)
   })
 
   # Template selector — hidden when "All Facilities" is chosen (uses profession-mapped template)

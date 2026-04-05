@@ -1,0 +1,192 @@
+---
+title: "FPREN Connectivity & Accessibility Report"
+subtitle: "Port, Service, and API Reachability — UF VM"
+date: "`r format(Sys.time(), '%B %d, %Y %I:%M %p %Z')`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    toc_depth: 2
+params:
+  mongo_uri: "mongodb://localhost:27017/"
+  checker_script: "/home/ufuser/Fpren-main/scripts/check_fpren_access.py"
+  python_bin: "/home/ufuser/Fpren-main/venv/bin/python3"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(jsonlite)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+```
+
+```{r run_checker}
+# Run the Python connectivity checker
+raw <- tryCatch(
+  system2(params$python_bin,
+          args    = c(params$checker_script, "--pretty"),
+          stdout  = TRUE, stderr = FALSE, timeout = 120),
+  error = function(e) NULL
+)
+
+if (is.null(raw) || length(raw) == 0) {
+  data <- list(results = data.frame(), total = 0,
+               reachable = 0, blocked = 0, refused = 0, errors = 0,
+               generated_at = "N/A")
+} else {
+  data <- tryCatch(fromJSON(paste(raw, collapse = "\n")),
+                   error = function(e) list(results = data.frame()))
+}
+
+df <- if (is.data.frame(data$results) && nrow(data$results) > 0) {
+  as.data.frame(data$results)
+} else {
+  data.frame(label="No data", category="", status="error",
+             latency_ms=NA, note="Checker failed", stringsAsFactors=FALSE)
+}
+
+# Status colour mapping
+status_colour <- function(s) {
+  switch(s,
+    reachable    = "\\textcolor{green!60!black}{\\textbf{REACHABLE}}",
+    refused      = "\\textcolor{orange}{\\textbf{REFUSED}}",
+    timeout      = "\\textcolor{red}{\\textbf{TIMEOUT}}",
+    unreachable  = "\\textcolor{red}{\\textbf{UNREACHABLE}}",
+    server_error = "\\textcolor{orange}{\\textbf{SERVER ERR}}",
+    error        = "\\textcolor{red}{\\textbf{ERROR}}",
+    skip         = "\\textcolor{gray}{SKIP}",
+    "\\textcolor{gray}{UNKNOWN}"
+  )
+}
+
+df$Status_fmt <- sapply(df$status %||% "error", status_colour)
+df$Latency    <- ifelse(is.na(df$latency_ms), "—",
+                        paste0(df$latency_ms, " ms"))
+```
+
+# Executive Summary
+
+```{r summary_table}
+summary_df <- data.frame(
+  Metric  = c("Total Checks", "Reachable", "Blocked / Timeout",
+              "Refused (host up, service down)", "Errors"),
+  Count   = c(data$total    %||% 0,
+              data$reachable %||% 0,
+              data$blocked   %||% 0,
+              data$refused   %||% 0,
+              data$errors    %||% 0),
+  stringsAsFactors = FALSE
+)
+kable(summary_df, booktabs = TRUE, col.names = c("Metric","Count")) %>%
+  kable_styling(latex_options = c("striped","hold_position"), full_width = FALSE) %>%
+  row_spec(which(summary_df$Metric %in% c("Blocked / Timeout","Errors")),
+           bold = TRUE, color = "red")
+```
+
+**Generated:** `r data$generated_at %||% "unknown"`
+
+> **Interpretation:** TIMEOUT typically means UF IT firewall is blocking the port.
+> REFUSED means the host is reachable but the service is not running.
+> REACHABLE means a TCP connection was established (or an HTTP 2xx/4xx was returned).
+
+\newpage
+
+# Local FPREN Services
+
+```{r local_services}
+local_df <- df %>%
+  filter(category == "local") %>%
+  select(label, host, port, Status_fmt, Latency, note) %>%
+  rename(Service = label, Host = host, Port = port,
+         Status = Status_fmt, `Latency` = Latency, Note = note)
+
+kable(local_df, booktabs = TRUE, escape = FALSE,
+      caption = "Localhost service reachability") %>%
+  kable_styling(latex_options = c("striped","hold_position","scale_down"))
+```
+
+# UF Network Services
+
+```{r uf_network}
+uf_df <- df %>%
+  filter(category == "uf_network") %>%
+  select(label, host, port, Status_fmt, Latency, note) %>%
+  rename(Service = label, Host = host, Port = port,
+         Status = Status_fmt, Latency = Latency, Note = note)
+
+kable(uf_df, booktabs = TRUE, escape = FALSE,
+      caption = "UF internal network service reachability") %>%
+  kable_styling(latex_options = c("striped","hold_position","scale_down"))
+```
+
+# External APIs & Services
+
+```{r external_apis}
+ext_df <- df %>%
+  filter(category == "external_api") %>%
+  select(label, host, port, Status_fmt, Latency, http_code, note) %>%
+  rename(Service = label, Host = host, Port = port,
+         Status = Status_fmt, Latency = Latency,
+         `HTTP Code` = http_code, Note = note)
+
+kable(ext_df, booktabs = TRUE, escape = FALSE,
+      caption = "External API reachability from UF VM") %>%
+  kable_styling(latex_options = c("striped","hold_position","scale_down"))
+```
+
+\newpage
+
+# Registered SNMP Devices
+
+```{r snmp_devices}
+snmp_df <- df %>% filter(category == "snmp_device")
+
+if (nrow(snmp_df) == 0) {
+  cat("No SNMP devices are registered to user assets yet.")
+} else {
+  snmp_df <- snmp_df %>%
+    select(label, host, port, Status_fmt, Latency, note) %>%
+    rename(Device = label, IP = host, Port = port,
+           Status = Status_fmt, Latency = Latency, `Asset / User` = note)
+  kable(snmp_df, booktabs = TRUE, escape = FALSE,
+        caption = "SNMP device reachability (TCP to configured IP:Port)") %>%
+    kable_styling(latex_options = c("striped","hold_position","scale_down"))
+}
+```
+
+# Firewall / Access Issues
+
+```{r firewall_issues}
+blocked <- df %>%
+  filter(status %in% c("timeout", "unreachable", "error")) %>%
+  select(label, host, port, status, error, note) %>%
+  rename(Service = label, Host = host, Port = port,
+         Status = status, `Error Detail` = error, Note = note)
+
+if (nrow(blocked) == 0) {
+  cat("No blocked or unreachable services detected.")
+} else {
+  kable(blocked, booktabs = TRUE, escape = TRUE,
+        caption = "Services that are BLOCKED, timed out, or errored") %>%
+    kable_styling(latex_options = c("striped","hold_position","scale_down")) %>%
+    row_spec(seq_len(nrow(blocked)), color = "red")
+}
+```
+
+# Recommendations for UF IT
+
+```{r recommendations}
+issues <- df %>% filter(status %in% c("timeout","unreachable"))
+cat(paste(
+  "Based on this check, the following ports should be requested from UF IT:\n\n",
+  paste(
+    sapply(seq_len(nrow(issues)), function(i)
+      sprintf("  - Open %s port %s to/from the VM (128.227.67.234): %s",
+              issues$protocol[i], issues$port[i], issues$label[i])),
+    collapse = "\n"
+  ),
+  if (nrow(issues) == 0) "  No blocked services detected. All tested endpoints are reachable." else "",
+  "\n\nNote: Some ports (Icecast 8000, Dashboard 80/443) are awaiting UF IT approval per project plan."
+))
+```

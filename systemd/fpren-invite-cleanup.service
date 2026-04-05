@@ -1,0 +1,12 @@
+[Unit]
+Description=FPREN Expired Invite Cleanup
+After=mongod.service
+Wants=mongod.service
+
+[Service]
+Type=oneshot
+User=ufuser
+ExecStart=/home/ufuser/Fpren-main/venv/bin/python3 /home/ufuser/Fpren-main/scripts/cleanup_expired_invites.py
+WorkingDirectory=/home/ufuser/Fpren-main
+StandardOutput=journal
+StandardError=journal

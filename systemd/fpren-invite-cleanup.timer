@@ -1,0 +1,10 @@
+[Unit]
+Description=Run FPREN invite cleanup daily at 03:00
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=fpren-invite-cleanup.service
+
+[Install]
+WantedBy=timers.target

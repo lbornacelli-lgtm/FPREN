@@ -189,7 +189,8 @@ read_notify_log <- function(n = 20) {
 }
 
 # ── MongoDB connections ───────────────────────────────────────────────────────
-MONGO_URI <- Sys.getenv("MONGO_URI", "mongodb://localhost:27017/")
+MONGO_URI     <- Sys.getenv("MONGO_URI", "mongodb://localhost:27017/")
+DASHBOARD_URL <- Sys.getenv("FPREN_DASHBOARD_URL", "https://128.227.67.234")
 
 # ── Florida ZIP → County lookup ───────────────────────────────────────────────
 FLORIDA_COUNTIES_LIST <- c(
@@ -471,40 +472,122 @@ get_col <- function(collection) {
 # Login screen HTML (shown before dashboard)
 login_screen_ui <- div(
   id = "login_screen",
-  style = "position:fixed;top:0;left:0;width:100%;height:100%;background:#f4f4f4;z-index:9999;display:flex;align-items:center;justify-content:center;overflow-y:auto;",
-  div(style = "background:white;padding:40px;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.15);max-width:520px;width:100%;margin:auto;",
+  style = paste0("position:fixed;top:0;left:0;width:100%;height:100%;",
+                 "background:#003087;z-index:9999;",
+                 "display:flex;align-items:center;justify-content:center;overflow-y:auto;"),
+
+  # ── JS: Enter key on invite form ─────────────────────────────────────────────
+  tags$script(HTML("
+    document.addEventListener('DOMContentLoaded', function() {
+      ['login_password','login_username'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') { document.getElementById('btn_login').click(); }
+        });
+      });
+      ['invite_pw1','invite_pw2'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') { document.getElementById('btn_accept_invite').click(); }
+        });
+      });
+    });
+  ")),
+
+  div(style = "max-width:520px;width:100%;margin:auto;padding:16px;",
+
+    # FPREN header
     div(style = "text-align:center;margin-bottom:20px;",
-      tags$div(style = "background:#003087;color:white;padding:16px;border-radius:6px;margin-bottom:12px;",
-        tags$h2(style = "margin:0;font-size:24px;font-weight:bold;", "FPREN"),
-        tags$p(style = "margin:4px 0 0;font-size:13px;", "Florida Public Radio Emergency Network"),
-        tags$p(style = "margin:2px 0 0;font-size:11px;opacity:0.8;", "University of Florida")
+      tags$div(style = "color:white;padding:20px 0 12px;",
+        tags$h1(style = "margin:0;font-size:36px;font-weight:800;letter-spacing:2px;", "FPREN"),
+        tags$p(style = "margin:4px 0 0;font-size:15px;opacity:0.9;",
+               "Florida Public Radio Emergency Network"),
+        tags$p(style = "margin:2px 0 0;font-size:12px;opacity:0.7;", "University of Florida")
       )
     ),
-    tags$div(
-      textInput("login_username", "Username", placeholder = "Enter username"),
-      passwordInput("login_password", "Password", placeholder = "Enter password"),
-      tags$script(HTML("
-        document.addEventListener('DOMContentLoaded', function() {
-          document.getElementById('login_password').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') { document.getElementById('btn_login').click(); }
-          });
-          document.getElementById('login_username').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') { document.getElementById('btn_login').click(); }
-          });
-        });
-      ")),
-      uiOutput("login_attempts_msg"),
-      br(),
-      actionButton("btn_login", "Login", class = "btn-primary btn-block",
-                   width = "100%", style = "font-size:16px;padding:10px;"),
-      br(),
-      actionButton("btn_forgot", "Forgot username or password?",
-                   class = "btn-link", style = "width:100%;text-align:center;"),
-      hr(),
-      tags$div(
-        style = "background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:12px;font-size:12px;color:#333;",
-        tags$strong("NOTICE \u2014 Acceptable Use Policy"),
-        tags$p(style = "margin-top:6px;margin-bottom:0;", AUP_TEXT)
+
+    # ── Panel A: Invite-Only message (shown by default) ───────────────────────
+    div(id = "panel_invite_only",
+      div(style = paste0("background:white;border-radius:8px;",
+                         "box-shadow:0 4px 24px rgba(0,0,0,0.25);padding:32px;"),
+
+        div(style = "text-align:center;padding-bottom:16px;",
+          tags$span(style = "font-size:52px;color:#003087;", HTML("&#128274;")),
+          tags$h4(style = "margin:12px 0 6px;color:#003087;",
+                  "Access by Invitation Only"),
+          tags$p(style = "color:#555;font-size:14px;",
+            "The FPREN Dashboard is restricted to authorized personnel.",
+            tags$br(),
+            "If you have received an invitation, use the link in your email or SMS.",
+            tags$br(),
+            "To request access, contact ",
+            tags$a(href = "mailto:lawrence.bornace@ufl.edu",
+                   "lawrence.bornace@ufl.edu"), "."
+          )
+        ),
+
+        # Invite error/status (shown when token is bad/expired)
+        uiOutput("invite_landing_msg"),
+
+        tags$hr(style = "margin:12px 0;"),
+
+        # Collapsible staff/admin login
+        tags$details(
+          tags$summary(
+            style = "cursor:pointer;color:#888;font-size:12px;text-align:center;user-select:none;",
+            "FPREN Staff / Admin Login"
+          ),
+          div(style = "padding-top:14px;",
+            textInput("login_username", "Username", placeholder = "Username"),
+            passwordInput("login_password", "Password", placeholder = "Password"),
+            uiOutput("login_attempts_msg"),
+            br(),
+            actionButton("btn_login", "Login",
+                         class = "btn-primary btn-block",
+                         style = "font-size:15px;padding:9px;"),
+            br(),
+            actionButton("btn_forgot", "Forgot username or password?",
+                         class = "btn-link",
+                         style = "width:100%;text-align:center;font-size:12px;")
+          )
+        ),
+
+        tags$hr(style = "margin:14px 0 10px;"),
+        div(style = "background:#fff8e1;border:1px solid #ffe082;border-radius:4px;padding:10px 12px;font-size:11px;color:#555;",
+          tags$strong("NOTICE \u2014 UF Acceptable Use Policy"),
+          tags$p(style = "margin-top:6px;margin-bottom:0;", AUP_TEXT)
+        )
+      )
+    ),
+
+    # ── Panel B: Invite Acceptance (hidden; shown after valid ?invite=TOKEN) ───
+    div(id = "panel_invite_accept", style = "display:none;",
+      div(style = paste0("background:white;border-radius:8px;",
+                         "box-shadow:0 4px 24px rgba(0,0,0,0.25);padding:32px;"),
+        div(style = "text-align:center;margin-bottom:16px;",
+          tags$span(style = "font-size:40px;", HTML("&#127381;")),
+          tags$h4(style = "color:#003087;margin:10px 0 4px;",
+                  "Activate Your FPREN Account"),
+          uiOutput("invite_accept_msg")
+        ),
+        passwordInput("invite_pw1", "Set Password (8+ characters)",
+                      placeholder = "New password"),
+        passwordInput("invite_pw2", "Confirm Password",
+                      placeholder = "Repeat password"),
+        br(),
+        actionButton("btn_accept_invite", "Activate Account & Sign In",
+                     class = "btn-success btn-block",
+                     style = "font-size:15px;padding:9px;"),
+        br(),
+        div(style = "background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:8px 12px;font-size:11px;",
+          icon("info-circle"),
+          " After setting your password you will be guided through SMS and email verification."
+        ),
+        tags$hr(style = "margin:14px 0 10px;"),
+        div(style = "background:#fff8e1;border:1px solid #ffe082;border-radius:4px;padding:10px 12px;font-size:11px;color:#555;",
+          tags$strong("NOTICE \u2014 UF Acceptable Use Policy"),
+          tags$p(style = "margin-top:6px;margin-bottom:0;", AUP_TEXT)
+        )
       )
     )
   )
@@ -1549,7 +1632,40 @@ ui <- tagList(
                 verbatimTextOutput("sms_blast_status")
             )
           )
-        )
+        ),
+
+        # ── Test SMS ─────────────────────────────────────────────────────────
+        conditionalPanel(
+          condition = "output.is_admin",
+          fluidRow(
+            box(title = tagList(icon("mobile-alt"), " Send Test SMS (Admin Only)"),
+                width = 6, status = "warning", solidHeader = TRUE,
+                p(tags$small(icon("info-circle"),
+                  " Send a test message to verify Twilio is working.",
+                  " Uses the credentials configured in the Stream Alerts tab.")),
+                textInput("test_sms_phone", "Recipient Phone (E.164)",
+                          placeholder = "+13525551234", width = "100%"),
+                textAreaInput("test_sms_msg", "Message",
+                              value = "FPREN test message. If received, SMS delivery is working correctly. —FPREN",
+                              rows = 3, width = "100%"),
+                actionButton("btn_send_test_sms", "Send Test SMS",
+                             class = "btn-warning", icon = icon("mobile-alt")),
+                br(), br(),
+                verbatimTextOutput("test_sms_status")
+            ),
+            # ── Group Invite Control ────────────────────────────────────────
+            box(title = tagList(icon("users-cog"), " Group Invite Settings (Admin Only)"),
+                width = 6, status = "info", solidHeader = TRUE,
+                p(tags$small(icon("info-circle"),
+                  " When disabled, users you add will NOT receive an invite email or SMS.",
+                  " Their account is still created — you must distribute credentials manually.")),
+                uiOutput("group_invite_toggle_ui"),
+                br(),
+                verbatimTextOutput("group_invite_status")
+            )
+          )
+        ),
+
       ),
       tabItem(tabName = "upload",
         fluidRow(
@@ -1928,6 +2044,39 @@ ui <- tagList(
                 )
               )
           )
+        ),
+        # ── Connectivity & Firewall Diagnostics ──────────────────────────────
+        conditionalPanel(
+          condition = "output.is_admin",
+          fluidRow(
+            box(
+              title  = tagList(icon("network-wired"), " Connectivity & Firewall Diagnostics (Admin)"),
+              width  = 12, status = "danger", solidHeader = TRUE, collapsible = TRUE,
+              p(tags$small(
+                icon("info-circle"),
+                " Tests all local services, UF network endpoints, external APIs, and registered SNMP devices.",
+                " Use this after context resets or to identify what UF IT needs to open.",
+                " Each check makes one TCP/HTTP attempt per service — no polling."
+              )),
+              fluidRow(
+                column(4,
+                  actionButton("btn_gen_access_report",
+                               "Run Connectivity Check & Generate PDF Report",
+                               class = "btn-danger", icon = icon("stethoscope"),
+                               width = "100%")
+                ),
+                column(3,
+                  br(),
+                  checkboxInput("access_report_email",
+                                "Email report to me when done", value = FALSE)
+                ),
+                column(5,
+                  verbatimTextOutput("access_report_status")
+                )
+              ),
+              uiOutput("access_report_download_ui")
+            )
+          )
         )
       ),
       # ── Florida Rivers Alerts ────────────────────────────────────────────
@@ -2117,7 +2266,163 @@ server <- function(input, output, session) {
     user_doc    = NULL
   )
 
-  login_msg_rv <- reactiveVal("")
+  login_msg_rv         <- reactiveVal("")
+  invite_user_rv       <- reactiveVal(NULL)   # user doc for pending invite
+  invite_landing_rv    <- reactiveVal("")     # message shown on Panel A
+  invite_accept_rv     <- reactiveVal("")     # message shown on Panel B
+
+  output$invite_landing_msg <- renderUI({
+    msg <- invite_landing_rv()
+    if (nchar(msg) == 0) return(NULL)
+    tags$div(class = "alert alert-warning",
+             style = "font-size:13px; margin:8px 0;", HTML(msg))
+  })
+  output$invite_accept_msg <- renderUI({
+    u <- invite_user_rv()
+    msg <- invite_accept_rv()
+    tagList(
+      if (!is.null(u))
+        tags$p(style = "color:#555;font-size:13px;",
+          "Welcome, ", tags$strong(as.character(u$username %||% "")), "!",
+          " Set a password to complete your registration.")
+      else NULL,
+      if (nchar(msg) > 0)
+        tags$div(class = "alert alert-warning",
+                 style = "font-size:12px;", HTML(msg))
+      else NULL
+    )
+  })
+
+  # ── Read invite token from URL on session start ─────────────────────────────
+  observe({
+    query <- parseQueryString(isolate(session$clientData$url_search))
+    tok   <- query[["invite"]] %||% ""
+    if (nchar(tok) == 0) return()
+
+    col <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                    error = function(e) NULL)
+    if (is.null(col)) return()
+
+    u_row <- tryCatch({
+      r <- col$find(sprintf('{"invite_token":"%s"}', tok))
+      col$disconnect()
+      if (nrow(r) > 0) r[1, ] else NULL
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL); NULL
+    })
+
+    if (is.null(u_row)) {
+      invite_landing_rv("Invalid or already-used invitation link.")
+      return()
+    }
+
+    # Check expiry
+    exp_str <- tryCatch(as.character(u_row$invite_expires %||% ""),
+                        error = function(e) "")
+    if (nchar(exp_str) > 0) {
+      exp_t <- tryCatch(as.POSIXct(exp_str, tz = "UTC"), error = function(e) NA)
+      if (!is.na(exp_t) && Sys.time() > exp_t) {
+        # Delete expired account
+        col2 <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                         error = function(e) NULL)
+        if (!is.null(col2)) {
+          tryCatch({
+            col2$remove(sprintf('{"invite_token":"%s"}', tok))
+            col2$disconnect()
+          }, error = function(e)
+            tryCatch(col2$disconnect(), error = function(e2) NULL))
+        }
+        log_audit("user_deleted", as.character(u_row$username %||% "unknown"),
+                  "system", "Invite expired — account auto-deleted")
+        invite_landing_rv(paste0(
+          "<strong>This invitation has expired.</strong> ",
+          "Your provisional account has been removed. ",
+          "Please contact <a href='mailto:lawrence.bornace@ufl.edu'>",
+          "lawrence.bornace@ufl.edu</a> to request a new invite."
+        ))
+        return()
+      }
+    }
+
+    # Valid invite — show Panel B
+    invite_user_rv(u_row)
+    shinyjs::hide("panel_invite_only")
+    shinyjs::show("panel_invite_accept")
+  })
+
+  # ── Accept invite: set password, auto-login ─────────────────────────────────
+  observeEvent(input$btn_accept_invite, {
+    u <- invite_user_rv()
+    if (is.null(u)) {
+      invite_accept_rv("Session lost — please use your invite link again."); return()
+    }
+    pw1 <- input$invite_pw1 %||% ""
+    pw2 <- input$invite_pw2 %||% ""
+    if (nchar(pw1) < 8) {
+      invite_accept_rv("Password must be at least 8 characters."); return()
+    }
+    if (pw1 != pw2) {
+      invite_accept_rv("Passwords do not match."); return()
+    }
+
+    uname    <- as.character(u$username %||% "")
+    new_hash <- bcrypt::hashpw(pw1)
+    now_str  <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+
+    col <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                    error = function(e) NULL)
+    if (is.null(col)) {
+      invite_accept_rv("Database unavailable — try again in a moment."); return()
+    }
+    tryCatch({
+      col$update(
+        sprintf('{"username":"%s"}', uname),
+        sprintf('{"$set":{"password":"%s","must_change_password":false,"invite_token":null,"invite_expires":null,"last_login":"%s"}}',
+                new_hash, now_str)
+      )
+      col$disconnect()
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL)
+      invite_accept_rv(paste0("Error activating account: ", conditionMessage(e)))
+      return()
+    })
+
+    log_audit("invite_accepted", uname, uname, "Account activated via invite link")
+
+    # Auto-login
+    auth_rv$logged_in <- TRUE
+    auth_rv$username  <- uname
+    auth_rv$role      <- as.character(u$role  %||% "viewer")
+    auth_rv$email     <- as.character(u$email %||% "")
+    auth_rv$phone     <- as.character(u$phone %||% "")
+    auth_rv$user_doc  <- u
+    shinyjs::hide("login_screen")
+    shinyjs::show("main_dashboard")
+
+    # Trigger post-login verification flow
+    must_change <- FALSE   # just changed password, skip that step
+    phone_ver   <- isTRUE(u$phone_verified)
+    email_ver   <- isTRUE(u$email_verified)
+    if (!phone_ver && nchar(auth_rv$phone) > 0) {
+      code     <- paste0(sample(0:9, 6, replace = TRUE), collapse = "")
+      exp_time <- format(Sys.time() + 600, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+      col2 <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                       error = function(e) NULL)
+      if (!is.null(col2)) {
+        tryCatch({
+          col2$update(sprintf('{"username":"%s"}', uname),
+                      sprintf('{"$set":{"verify_code":"%s","verify_expires":"%s"}}',
+                              code, exp_time))
+          col2$disconnect()
+        }, error = function(e)
+          tryCatch(col2$disconnect(), error = function(e2) NULL))
+      }
+      send_twilio_sms(auth_rv$phone,
+        paste0("FPREN: Your verification code is ", code,
+               ". Expires in 10 minutes. —FPREN"))
+      showModal(.phone_verify_modal())
+    }
+  })
 
   output$is_admin <- reactive({ isTRUE(auth_rv$role == "admin") })
   outputOptions(output, "is_admin", suspendWhenHidden = FALSE)
@@ -5428,35 +5733,59 @@ server <- function(input, output, session) {
     uname <- tolower(gsub("[^a-z0-9._]", "", strsplit(email, "@")[[1]][1]))
     if (nchar(uname) == 0) uname <- paste0("user", format(Sys.time(), "%Y%m%d%H%M%S"))
 
-    temp_pw    <- paste0(sample(c(letters, LETTERS, 0:9), 8, replace=TRUE), collapse="")
-    pw_hash    <- bcrypt::hashpw(temp_pw)
-    invite_tok <- gen_token()
-    now_str    <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz="UTC")
+    # Check if inviting admin has group invites disabled
+    admin_invites_on <- TRUE
+    creator <- auth_rv$username %||% "admin"
+    if (creator != "admin") {
+      col_c <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                        error = function(e) NULL)
+      if (!is.null(col_c)) {
+        cr <- tryCatch({
+          r <- col_c$find(sprintf('{"username":"%s"}', creator),
+                          fields = '{"group_invites_enabled":1,"_id":0}')
+          col_c$disconnect()
+          if (nrow(r) > 0) r[1, ] else NULL
+        }, error = function(e) {
+          tryCatch(col_c$disconnect(), error = function(e2) NULL); NULL
+        })
+        if (!is.null(cr) && isFALSE(cr$group_invites_enabled))
+          admin_invites_on <- FALSE
+      }
+    }
+
+    temp_pw      <- paste0(sample(c(letters, LETTERS, 0:9), 8, replace=TRUE), collapse="")
+    pw_hash      <- bcrypt::hashpw(temp_pw)
+    invite_tok   <- gen_token()
+    now_str      <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz="UTC")
+    inv_exp_str  <- format(Sys.time() + 3*24*3600, "%Y-%m-%dT%H:%M:%SZ", tz="UTC")
+    invite_link  <- paste0(DASHBOARD_URL, "/?invite=", invite_tok)
 
     col <- tryCatch(mongo(collection="users", db="weather_rss", url=MONGO_URI), error=function(e) NULL)
     if (is.null(col)) { user_mgmt_msg("DB unavailable."); return() }
     tryCatch({
       col$insert(list(
-        username             = uname,
-        email                = email,
-        phone                = phone,
-        password             = pw_hash,
-        role                 = role,
-        profession           = profession,
-        active               = TRUE,
-        email_verified       = FALSE,
-        phone_verified       = FALSE,
-        must_change_password = TRUE,
-        failed_attempts      = 0L,
-        locked_until         = NULL,
-        last_login           = NULL,
-        created_at           = now_str,
-        created_by           = auth_rv$username %||% "admin",
-        invite_token         = invite_tok,
-        verify_code          = NULL,
-        verify_expires       = NULL,
-        reset_code           = NULL,
-        reset_expires        = NULL
+        username              = uname,
+        email                 = email,
+        phone                 = phone,
+        password              = pw_hash,
+        role                  = role,
+        profession            = profession,
+        group_invites_enabled = TRUE,
+        active                = TRUE,
+        email_verified        = FALSE,
+        phone_verified        = FALSE,
+        must_change_password  = TRUE,
+        failed_attempts       = 0L,
+        locked_until          = NULL,
+        last_login            = NULL,
+        created_at            = now_str,
+        created_by            = creator,
+        invite_token          = invite_tok,
+        invite_expires        = inv_exp_str,
+        verify_code           = NULL,
+        verify_expires        = NULL,
+        reset_code            = NULL,
+        reset_expires         = NULL
       ))
       col$disconnect()
     }, error=function(e) {
@@ -5465,45 +5794,63 @@ server <- function(input, output, session) {
       return()
     })
 
-    # Send invite email (polished HTML)
-    send_fpren_email(email,
-      paste0("[FPREN] Your dashboard account — username: ", uname),
-      paste0(
-        "<div style='background:#003087;color:white;padding:20px 24px;border-radius:6px 6px 0 0;'>",
-        "<h2 style='margin:0;font-size:22px;'>FPREN Dashboard Invitation</h2>",
-        "<p style='margin:4px 0 0;opacity:0.85;font-size:14px;'>Florida Public Radio Emergency Network</p></div>",
-        "<div style='background:#f9f9f9;padding:20px 24px;border:1px solid #ddd;border-top:none;border-radius:0 0 6px 6px;'>",
-        "<p>Hello,</p>",
-        "<p>An account has been created for you on the <strong>FPREN Dashboard</strong>. ",
-        "Use the credentials below to log in for the first time.</p>",
-        "<table style='border-collapse:collapse;margin:16px 0;background:#fff;border:1px solid #ddd;width:100%;'>",
-        "<tr style='background:#003087;color:white;'><th style='padding:8px 12px;text-align:left;'>Field</th><th style='padding:8px 12px;text-align:left;'>Value</th></tr>",
-        "<tr><td style='padding:8px 12px;border-bottom:1px solid #eee;font-weight:bold;'>Dashboard URL</td>",
-        "<td style='padding:8px 12px;border-bottom:1px solid #eee;'><a href='https://128.227.67.234'>https://128.227.67.234</a></td></tr>",
-        "<tr><td style='padding:8px 12px;border-bottom:1px solid #eee;font-weight:bold;'>Username</td>",
-        "<td style='padding:8px 12px;border-bottom:1px solid #eee;font-family:monospace;font-size:15px;'>", uname, "</td></tr>",
-        "<tr><td style='padding:8px 12px;border-bottom:1px solid #eee;font-weight:bold;'>Temporary Password</td>",
-        "<td style='padding:8px 12px;border-bottom:1px solid #eee;font-family:monospace;font-size:15px;color:#c00;'>", temp_pw, "</td></tr>",
-        "<tr><td style='padding:8px 12px;border-bottom:1px solid #eee;font-weight:bold;'>Role</td>",
-        "<td style='padding:8px 12px;border-bottom:1px solid #eee;'>", role, "</td></tr>",
-        if (nchar(profession) > 0) paste0(
-          "<tr><td style='padding:8px 12px;font-weight:bold;'>Profession</td>",
-          "<td style='padding:8px 12px;'>", profession, "</td></tr>"
-        ) else "",
-        "</table>",
-        "<div style='background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:12px 16px;margin:16px 0;'>",
-        "<strong>Important:</strong> You will be required to change your password on first login, ",
-        "then complete SMS and email verification before accessing the dashboard.",
-        "</div>",
-        "<p>Your account will be automatically disabled after <strong>6 months of inactivity</strong>. ",
-        "Log in at least once every 6 months to keep your account active.</p>",
-        "<p>For help or to report issues, contact <a href='mailto:lawrence.bornace@ufl.edu'>lawrence.bornace@ufl.edu</a>.</p>",
-        "</div>"
-      ))
+    # Send invite email (with direct invite link + 72-hour expiry warning)
+    if (admin_invites_on) {
+      send_fpren_email(email,
+        paste0("[FPREN] You have been invited to the FPREN Dashboard — action required"),
+        paste0(
+          "<div style='background:#003087;color:white;padding:20px 24px;border-radius:6px 6px 0 0;'>",
+          "<h2 style='margin:0;font-size:22px;'>FPREN Dashboard Invitation</h2>",
+          "<p style='margin:4px 0 0;opacity:0.85;font-size:14px;'>Florida Public Radio Emergency Network \u2014 University of Florida</p></div>",
+          "<div style='background:#f9f9f9;padding:20px 24px;border:1px solid #ddd;border-top:none;border-radius:0 0 6px 6px;'>",
+          "<p>Hello,</p>",
+          "<p>You have been invited to access the <strong>FPREN Dashboard</strong>. ",
+          "Click the button below to activate your account and set your password:</p>",
+          "<div style='text-align:center;margin:20px 0;'>",
+          "<a href='", invite_link, "' style='background:#003087;color:white;",
+          "padding:12px 28px;border-radius:6px;text-decoration:none;font-size:16px;font-weight:bold;'>",
+          "Activate My Account &rarr;</a></div>",
+          "<p style='font-size:12px;color:#666;word-break:break-all;'>Or paste this link: <code>",
+          invite_link, "</code></p>",
+          "<div style='background:#fce4e4;border:2px solid #e74c3c;border-radius:4px;padding:12px 16px;margin:16px 0;'>",
+          "<strong style='color:#c0392b;'>&#9888; This invitation expires in 72 hours (by ",
+          format(Sys.time() + 3*24*3600, "%B %d, %Y at %I:%M %p", tz="America/New_York"), " ET).</strong><br>",
+          "If you do not activate your account within 72 hours, your account will be <strong>automatically deleted</strong> ",
+          "and you will need to request a new invitation.",
+          "</div>",
+          "<table style='border-collapse:collapse;margin:12px 0;background:#fff;border:1px solid #ddd;width:100%;font-size:13px;'>",
+          "<tr><td style='padding:7px 12px;border-bottom:1px solid #eee;font-weight:bold;width:140px;'>Username</td>",
+          "<td style='padding:7px 12px;border-bottom:1px solid #eee;font-family:monospace;'>", uname, "</td></tr>",
+          "<tr><td style='padding:7px 12px;border-bottom:1px solid #eee;font-weight:bold;'>Role</td>",
+          "<td style='padding:7px 12px;border-bottom:1px solid #eee;'>", role, "</td></tr>",
+          if (nchar(profession) > 0) paste0(
+            "<tr><td style='padding:7px 12px;font-weight:bold;'>Profession</td>",
+            "<td style='padding:7px 12px;'>", profession, "</td></tr>") else "",
+          "</table>",
+          "<p style='font-size:12px;color:#666;'>After activation you will complete SMS and email verification. ",
+          "Your account will be automatically disabled after <strong>6 months of inactivity</strong>.</p>",
+          "<p style='font-size:12px;'>Questions? Contact <a href='mailto:lawrence.bornace@ufl.edu'>lawrence.bornace@ufl.edu</a>.</p>",
+          "</div>"
+        ))
+
+      # Send SMS invite if phone provided
+      if (nchar(phone) > 0) {
+        sms_body <- paste0(
+          "FPREN DASHBOARD INVITE\n",
+          "You have been invited by ", creator, ".\n",
+          "Username: ", uname, "\n",
+          "Activate: ", invite_link, "\n",
+          "EXPIRES IN 72 HRS. If not activated your account is deleted.\n",
+          "Reply STOP to opt out. \u2014FPREN"
+        )
+        send_twilio_sms(phone, sms_body)
+      }
+    }
 
     # Log and notify
-    log_audit("user_add", uname, auth_rv$username %||% "admin",
-              paste("Added user", uname, "(", email, ") with role", role))
+    log_audit("user_add", uname, creator,
+              paste0("Added user ", uname, " (", email, ") role:", role,
+                     if (!admin_invites_on) " [invites suppressed by creator]" else ""))
 
     send_notification_emails(
       paste("FPREN: New user added:", uname),
@@ -5512,11 +5859,21 @@ server <- function(input, output, session) {
              "<p><strong>Username:</strong> ", uname, "</p>",
              "<p><strong>Email:</strong> ", email, "</p>",
              "<p><strong>Role:</strong> ", role, "</p>",
-             "<p><strong>Performed by:</strong> ", auth_rv$username %||% "admin", "</p>",
+             "<p><strong>Invite sent:</strong> ", if (admin_invites_on) "Yes" else "No (suppressed by creator setting)", "</p>",
+             "<p><strong>Invite expires:</strong> ", inv_exp_str, "</p>",
+             "<p><strong>Performed by:</strong> ", creator, "</p>",
              "<p><strong>Date/Time:</strong> ", now_str, "</p>")
     )
 
-    user_mgmt_msg(paste("User", uname, "created and invite sent to", email))
+    user_mgmt_msg(paste0(
+      "User ", uname, " created",
+      if (admin_invites_on)
+        paste0(" — invite email sent to ", email,
+               if (nchar(phone) > 0) paste0(" + SMS to ", phone) else "",
+               " (expires 72 hours)")
+      else
+        " — invite suppressed (your group_invites_enabled is OFF)"
+    ))
     updateTextInput(session, "new_user_email", value="")
     updateTextInput(session, "new_user_phone", value="")
     updateSelectInput(session, "new_user_profession", selected="")
@@ -8077,6 +8434,158 @@ server <- function(input, output, session) {
       error = function(e) paste("System error:", conditionMessage(e))
     )
     sms_blast_msg(paste(result, collapse = "\n"))
+  })
+
+  # ── Test SMS ──────────────────────────────────────────────────────────────────
+  test_sms_status_rv <- reactiveVal("")
+  output$test_sms_status <- renderText({ test_sms_status_rv() })
+
+  observeEvent(input$btn_send_test_sms, {
+    if (!isTRUE(auth_rv$role == "admin")) {
+      test_sms_status_rv("Admin role required."); return()
+    }
+    phone <- trimws(input$test_sms_phone %||% "")
+    msg   <- trimws(input$test_sms_msg   %||% "")
+    if (nchar(phone) == 0) { test_sms_status_rv("Phone number required."); return() }
+    if (nchar(msg)   == 0) { test_sms_status_rv("Message cannot be empty."); return() }
+    test_sms_status_rv(paste0("Sending to ", phone, " ..."))
+    ok <- send_twilio_sms(phone, msg)
+    test_sms_status_rv(if (ok)
+      paste0("Sent successfully to ", phone)
+    else
+      paste0("Failed — check Twilio credentials in Stream Alerts tab, then retry."))
+  })
+
+  # ── Accessibility / Firewall Report ──────────────────────────────────────────
+  access_report_status_rv <- reactiveVal("")
+  access_report_path_rv   <- reactiveVal(NULL)
+  output$access_report_status <- renderText({ access_report_status_rv() })
+
+  output$access_report_download_ui <- renderUI({
+    path <- access_report_path_rv()
+    if (is.null(path) || !file.exists(path)) return(NULL)
+    fname <- basename(path)
+    tags$div(style = "margin-top:8px;",
+      icon("file-pdf"), " Report ready: ",
+      tags$a(href = paste0("/fpren/reports/output/", fname), target = "_blank",
+             tags$strong(fname)),
+      tags$small(style = "color:#888; margin-left:8px;",
+                 paste0("(", round(file.size(path)/1024, 1), " KB)"))
+    )
+  })
+
+  observeEvent(input$btn_gen_access_report, {
+    if (!isTRUE(auth_rv$role == "admin")) {
+      access_report_status_rv("Admin role required."); return()
+    }
+    access_report_status_rv("Running connectivity checks (may take 30-60 s)...")
+    access_report_path_rv(NULL)
+    ts      <- format(Sys.time(), "%Y%m%d_%H%M%S")
+    out_dir <- "/home/ufuser/Fpren-main/reports/output"
+    if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+    out_pdf <- file.path(out_dir, paste0("fpren_accessibility_", ts, ".pdf"))
+    result <- tryCatch(
+      rmarkdown::render(
+        "/home/ufuser/Fpren-main/reports/fpren_accessibility_report.Rmd",
+        output_file = out_pdf,
+        params = list(
+          mongo_uri      = MONGO_URI,
+          checker_script = "/home/ufuser/Fpren-main/scripts/check_fpren_access.py",
+          python_bin     = "/home/ufuser/Fpren-main/venv/bin/python3"
+        ),
+        envir  = new.env(parent = globalenv()),
+        quiet  = TRUE
+      ),
+      error = function(e) { access_report_status_rv(paste0("Render error: ", conditionMessage(e))); NULL }
+    )
+    if (!is.null(result) && file.exists(out_pdf)) {
+      access_report_path_rv(out_pdf)
+      access_report_status_rv(paste0("Report generated: ", basename(out_pdf)))
+      if (isTRUE(input$access_report_email)) {
+        send_fpren_email(auth_rv$email,
+          paste0("[FPREN] Connectivity & Firewall Report — ", format(Sys.time(), "%Y-%m-%d %H:%M")),
+          paste0("<p>Attached: FPREN Connectivity & Firewall Diagnostics report generated ",
+                 format(Sys.time(), "%B %d, %Y at %I:%M %p %Z"), ".</p>"),
+          attachment_path = out_pdf)
+        access_report_status_rv(paste0("Report generated and emailed to ", auth_rv$email))
+      }
+    }
+  })
+
+  # ── Group Invite Toggle ───────────────────────────────────────────────────────
+  group_invite_rv     <- reactiveVal(0)
+  group_invite_msg_rv <- reactiveVal("")
+  output$group_invite_status <- renderText({ group_invite_msg_rv() })
+
+  output$group_invite_toggle_ui <- renderUI({
+    group_invite_rv()
+    uname <- auth_rv$username %||% ""
+    if (nchar(uname) == 0) return(NULL)
+    col <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                    error = function(e) NULL)
+    if (is.null(col)) return(p("DB unavailable"))
+    enabled <- tryCatch({
+      r <- col$find(sprintf('{"username":"%s"}', uname),
+                    fields = '{"group_invites_enabled":1,"_id":0}')
+      col$disconnect()
+      if (nrow(r) > 0 && !is.null(r$group_invites_enabled) &&
+          !is.na(r$group_invites_enabled))
+        isTRUE(r$group_invites_enabled)
+      else TRUE   # default: ON
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL); TRUE
+    })
+    tagList(
+      div(style = "margin-bottom:10px;",
+        tags$strong("Send invites when I add users: "),
+        tags$span(
+          style = if (enabled) "color:#27ae60;font-weight:600;" else "color:#e74c3c;font-weight:600;",
+          if (enabled) "ON" else "OFF"
+        )
+      ),
+      if (enabled)
+        actionButton("btn_group_invite_disable", "Disable Group Invites",
+                     class = "btn-warning btn-sm", icon = icon("user-slash"))
+      else
+        actionButton("btn_group_invite_enable", "Enable Group Invites",
+                     class = "btn-success btn-sm", icon = icon("user-check"))
+    )
+  })
+
+  observeEvent(input$btn_group_invite_enable, {
+    if (!isTRUE(auth_rv$role == "admin")) return()
+    uname <- auth_rv$username %||% ""
+    col <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                    error = function(e) NULL)
+    if (is.null(col)) { group_invite_msg_rv("DB unavailable."); return() }
+    tryCatch({
+      col$update(sprintf('{"username":"%s"}', uname),
+                 '{"$set":{"group_invites_enabled":true}}')
+      col$disconnect()
+      group_invite_msg_rv("Group invites ENABLED — new users will receive invite email and SMS.")
+      group_invite_rv(group_invite_rv() + 1)
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL)
+      group_invite_msg_rv(paste("Error:", conditionMessage(e)))
+    })
+  })
+
+  observeEvent(input$btn_group_invite_disable, {
+    if (!isTRUE(auth_rv$role == "admin")) return()
+    uname <- auth_rv$username %||% ""
+    col <- tryCatch(mongo("users", "weather_rss", url = MONGO_URI),
+                    error = function(e) NULL)
+    if (is.null(col)) { group_invite_msg_rv("DB unavailable."); return() }
+    tryCatch({
+      col$update(sprintf('{"username":"%s"}', uname),
+                 '{"$set":{"group_invites_enabled":false}}')
+      col$disconnect()
+      group_invite_msg_rv("Group invites DISABLED — users you add will NOT receive invite email or SMS.")
+      group_invite_rv(group_invite_rv() + 1)
+    }, error = function(e) {
+      tryCatch(col$disconnect(), error = function(e2) NULL)
+      group_invite_msg_rv(paste("Error:", conditionMessage(e)))
+    })
   })
 
 }

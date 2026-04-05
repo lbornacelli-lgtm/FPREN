@@ -1,12 +1,18 @@
 ---
 title: "FPREN Connectivity & Accessibility Report"
-subtitle: "Port, Service, and API Reachability — UF VM"
+subtitle: "Port, Service, and API Reachability — UF VM 128.227.67.234"
 date: "`r format(Sys.time(), '%B %d, %Y %I:%M %p %Z')`"
 output:
   pdf_document:
     latex_engine: xelatex
     toc: true
     toc_depth: 2
+geometry: "left=0.85in,right=0.85in,top=0.9in,bottom=0.9in"
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{colortbl}
+  - \usepackage{xcolor}
+  - \renewcommand{\arraystretch}{1.2}
 params:
   mongo_uri: "mongodb://localhost:27017/"
   checker_script: "/home/ufuser/Fpren-main/scripts/check_fpren_access.py"
@@ -19,10 +25,16 @@ library(jsonlite)
 library(dplyr)
 library(knitr)
 library(kableExtra)
+
+trunc_str <- function(x, n = 52) {
+  ifelse(is.na(x) | x == "NULL" | x == "NA", "—",
+    ifelse(nchar(as.character(x)) > n,
+           paste0(substr(as.character(x), 1, n), "\u2026"),
+           as.character(x)))
+}
 ```
 
 ```{r run_checker}
-# Run the Python connectivity checker
 raw <- tryCatch(
   system2(params$python_bin,
           args    = c(params$checker_script, "--pretty"),
@@ -46,49 +58,50 @@ df <- if (is.data.frame(data$results) && nrow(data$results) > 0) {
              latency_ms=NA, note="Checker failed", stringsAsFactors=FALSE)
 }
 
-# Status colour mapping
-status_colour <- function(s) {
-  switch(s,
-    reachable    = "\\textcolor{green!60!black}{\\textbf{REACHABLE}}",
+status_badge <- function(s) {
+  switch(as.character(s),
+    reachable    = "\\textcolor{green!60!black}{\\textbf{OK}}",
     refused      = "\\textcolor{orange}{\\textbf{REFUSED}}",
     timeout      = "\\textcolor{red}{\\textbf{TIMEOUT}}",
-    unreachable  = "\\textcolor{red}{\\textbf{UNREACHABLE}}",
-    server_error = "\\textcolor{orange}{\\textbf{SERVER ERR}}",
+    unreachable  = "\\textcolor{red}{\\textbf{UNREACH}}",
+    server_error = "\\textcolor{orange}{\\textbf{SRVERR}}",
     error        = "\\textcolor{red}{\\textbf{ERROR}}",
     skip         = "\\textcolor{gray}{SKIP}",
-    "\\textcolor{gray}{UNKNOWN}"
+                   "\\textcolor{gray}{UNK}"
   )
 }
 
-df$Status_fmt <- sapply(df$status %||% "error", status_colour)
+df$Status_fmt <- sapply(df$status %||% "error", status_badge)
 df$Latency    <- ifelse(is.na(df$latency_ms), "—",
-                        paste0(df$latency_ms, " ms"))
+                        paste0(round(df$latency_ms, 0), " ms"))
+df$note_short  <- trunc_str(df$note,  50)
+df$error_short <- trunc_str(df$error, 58)
 ```
 
 # Executive Summary
 
 ```{r summary_table}
 summary_df <- data.frame(
-  Metric  = c("Total Checks", "Reachable", "Blocked / Timeout",
-              "Refused (host up, service down)", "Errors"),
-  Count   = c(data$total    %||% 0,
-              data$reachable %||% 0,
-              data$blocked   %||% 0,
-              data$refused   %||% 0,
-              data$errors    %||% 0),
+  Metric = c("Total Checks", "Reachable", "Blocked / Timeout",
+             "Refused (host up, service down)", "Errors"),
+  Count  = c(data$total     %||% 0,
+             data$reachable %||% 0,
+             data$blocked   %||% 0,
+             data$refused   %||% 0,
+             data$errors    %||% 0),
   stringsAsFactors = FALSE
 )
-kable(summary_df, booktabs = TRUE, col.names = c("Metric","Count")) %>%
-  kable_styling(latex_options = c("striped","hold_position"), full_width = FALSE) %>%
-  row_spec(which(summary_df$Metric %in% c("Blocked / Timeout","Errors")),
+kable(summary_df, booktabs = TRUE, col.names = c("Metric", "Count")) %>%
+  kable_styling(latex_options = c("striped", "hold_position"),
+                full_width = FALSE, position = "left") %>%
+  row_spec(which(summary_df$Metric %in% c("Blocked / Timeout", "Errors")),
            bold = TRUE, color = "red")
 ```
 
 **Generated:** `r data$generated_at %||% "unknown"`
 
-> **Interpretation:** TIMEOUT typically means UF IT firewall is blocking the port.
-> REFUSED means the host is reachable but the service is not running.
-> REACHABLE means a TCP connection was established (or an HTTP 2xx/4xx was returned).
+> **Key:** `OK` = TCP/HTTP connection succeeded. `TIMEOUT` = likely firewalled by UF IT.
+> `REFUSED` = host up but service not listening. `UNREACH` = no route to host.
 
 \newpage
 
@@ -97,13 +110,14 @@ kable(summary_df, booktabs = TRUE, col.names = c("Metric","Count")) %>%
 ```{r local_services}
 local_df <- df %>%
   filter(category == "local") %>%
-  select(label, host, port, Status_fmt, Latency, note) %>%
-  rename(Service = label, Host = host, Port = port,
-         Status = Status_fmt, `Latency` = Latency, Note = note)
+  mutate(Port = as.character(port)) %>%
+  select(label, Port, Status_fmt, Latency, note_short) %>%
+  rename(Service = label, Status = Status_fmt, Note = note_short)
 
 kable(local_df, booktabs = TRUE, escape = FALSE,
       caption = "Localhost service reachability") %>%
-  kable_styling(latex_options = c("striped","hold_position","scale_down"))
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"),
+                full_width = FALSE)
 ```
 
 # UF Network Services
@@ -111,31 +125,33 @@ kable(local_df, booktabs = TRUE, escape = FALSE,
 ```{r uf_network}
 uf_df <- df %>%
   filter(category == "uf_network") %>%
-  select(label, host, port, Status_fmt, Latency, note) %>%
-  rename(Service = label, Host = host, Port = port,
-         Status = Status_fmt, Latency = Latency, Note = note)
+  mutate(Port = as.character(port)) %>%
+  select(label, host, Port, Status_fmt, Latency, note_short) %>%
+  rename(Service = label, Host = host, Status = Status_fmt, Note = note_short)
 
 kable(uf_df, booktabs = TRUE, escape = FALSE,
       caption = "UF internal network service reachability") %>%
-  kable_styling(latex_options = c("striped","hold_position","scale_down"))
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"),
+                full_width = FALSE)
 ```
+
+\newpage
 
 # External APIs & Services
 
 ```{r external_apis}
 ext_df <- df %>%
   filter(category == "external_api") %>%
-  select(label, host, port, Status_fmt, Latency, http_code, note) %>%
-  rename(Service = label, Host = host, Port = port,
-         Status = Status_fmt, Latency = Latency,
-         `HTTP Code` = http_code, Note = note)
+  mutate(Port = as.character(port),
+         Code = ifelse(is.na(http_code), "—", as.character(http_code))) %>%
+  select(label, Port, Status_fmt, Latency, Code, note_short) %>%
+  rename(Service = label, Status = Status_fmt, HTTP = Code, Note = note_short)
 
 kable(ext_df, booktabs = TRUE, escape = FALSE,
       caption = "External API reachability from UF VM") %>%
-  kable_styling(latex_options = c("striped","hold_position","scale_down"))
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"),
+                full_width = FALSE)
 ```
-
-\newpage
 
 # Registered SNMP Devices
 
@@ -145,48 +161,53 @@ snmp_df <- df %>% filter(category == "snmp_device")
 if (nrow(snmp_df) == 0) {
   cat("No SNMP devices are registered to user assets yet.")
 } else {
-  snmp_df <- snmp_df %>%
-    select(label, host, port, Status_fmt, Latency, note) %>%
-    rename(Device = label, IP = host, Port = port,
-           Status = Status_fmt, Latency = Latency, `Asset / User` = note)
-  kable(snmp_df, booktabs = TRUE, escape = FALSE,
+  snmp_tbl <- snmp_df %>%
+    mutate(Port = as.character(port)) %>%
+    select(label, host, Port, Status_fmt, Latency, note_short) %>%
+    rename(Device = label, IP = host, Status = Status_fmt,
+           Latency = Latency, `Asset / User` = note_short)
+  kable(snmp_tbl, booktabs = TRUE, escape = FALSE,
         caption = "SNMP device reachability (TCP to configured IP:Port)") %>%
-    kable_styling(latex_options = c("striped","hold_position","scale_down"))
+    kable_styling(latex_options = c("striped", "hold_position", "scale_down"),
+                  full_width = FALSE)
 }
 ```
+
+\newpage
 
 # Firewall / Access Issues
 
 ```{r firewall_issues}
 blocked <- df %>%
   filter(status %in% c("timeout", "unreachable", "error")) %>%
-  select(label, host, port, status, error, note) %>%
-  rename(Service = label, Host = host, Port = port,
-         Status = status, `Error Detail` = error, Note = note)
+  mutate(Port = as.character(port)) %>%
+  select(label, host, Port, status, error_short, note_short) %>%
+  rename(Service = label, Host = host, Status = status,
+         `Error Detail` = error_short, Note = note_short)
 
 if (nrow(blocked) == 0) {
   cat("No blocked or unreachable services detected.")
 } else {
   kable(blocked, booktabs = TRUE, escape = TRUE,
         caption = "Services that are BLOCKED, timed out, or errored") %>%
-    kable_styling(latex_options = c("striped","hold_position","scale_down")) %>%
+    kable_styling(latex_options = c("striped", "hold_position", "scale_down"),
+                  full_width = FALSE) %>%
     row_spec(seq_len(nrow(blocked)), color = "red")
 }
 ```
 
 # Recommendations for UF IT
 
-```{r recommendations}
-issues <- df %>% filter(status %in% c("timeout","unreachable"))
-cat(paste(
-  "Based on this check, the following ports should be requested from UF IT:\n\n",
-  paste(
-    sapply(seq_len(nrow(issues)), function(i)
-      sprintf("  - Open %s port %s to/from the VM (128.227.67.234): %s",
-              issues$protocol[i], issues$port[i], issues$label[i])),
-    collapse = "\n"
-  ),
-  if (nrow(issues) == 0) "  No blocked services detected. All tested endpoints are reachable." else "",
-  "\n\nNote: Some ports (Icecast 8000, Dashboard 80/443) are awaiting UF IT approval per project plan."
-))
+```{r recommendations, results='asis'}
+issues <- df %>% filter(status %in% c("timeout", "unreachable"))
+if (nrow(issues) == 0) {
+  cat("No blocked services detected. All tested endpoints are reachable.\n\n")
+} else {
+  lines <- sapply(seq_len(nrow(issues)), function(i)
+    sprintf("- Open **%s port %s** on VM 128.227.67.234 — *%s*",
+            issues$protocol[i], issues$port[i], issues$label[i]))
+  cat(paste(lines, collapse = "\n\n"))
+  cat("\n\n")
+}
+cat("*Note: Icecast port 8000 zone streams and Dashboard ports 80/443 are pending UF IT approval per project plan.*")
 ```

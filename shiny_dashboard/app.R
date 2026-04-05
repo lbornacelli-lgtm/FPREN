@@ -534,8 +534,12 @@ login_screen_ui <- div(
         # Collapsible staff/admin login
         tags$details(
           tags$summary(
-            style = "cursor:pointer;color:#888;font-size:12px;text-align:center;user-select:none;",
-            "FPREN Staff / Admin Login"
+            style = paste0(
+              "cursor:pointer;font-size:14px;font-weight:600;text-align:center;",
+              "user-select:none;color:#003087;padding:8px;border-radius:4px;",
+              "border:1px solid #cce0ff;background:#f0f6ff;margin-bottom:4px;"
+            ),
+            HTML("&#128273;&nbsp; Staff / Admin Login &nbsp;&#9660;")
           ),
           div(style = "padding-top:14px;",
             textInput("login_username", "Username", placeholder = "Username"),
@@ -8500,13 +8504,21 @@ server <- function(input, output, session) {
     if (is.null(path) || !file.exists(path)) return(NULL)
     fname <- basename(path)
     tags$div(style = "margin-top:8px;",
-      icon("file-pdf"), " Report ready: ",
-      tags$a(href = paste0("/fpren/reports/output/", fname), target = "_blank",
-             tags$strong(fname)),
+      downloadButton("dl_access_report", paste0("Download ", fname),
+                     class = "btn-sm btn-success", icon = icon("download")),
       tags$small(style = "color:#888; margin-left:8px;",
                  paste0("(", round(file.size(path)/1024, 1), " KB)"))
     )
   })
+
+  output$dl_access_report <- downloadHandler(
+    filename = function() basename(access_report_path_rv() %||% "fpren_accessibility_report.pdf"),
+    content  = function(file) {
+      src <- access_report_path_rv()
+      if (!is.null(src) && file.exists(src)) file.copy(src, file)
+    },
+    contentType = "application/pdf"
+  )
 
   observeEvent(input$btn_gen_access_report, {
     if (!isTRUE(auth_rv$role == "admin")) {
@@ -8556,19 +8568,24 @@ server <- function(input, output, session) {
     if (is.null(path) || !file.exists(path)) return(NULL)
     fname <- basename(path)
     tags$div(style = "margin-top:8px;",
-      icon("file-pdf", style = "color:#e74c3c;"), " Report ready: ",
-      tags$a(href  = paste0("/fpren/session/", session$token,
-                            "/download/", fname),
-             target = "_blank",
-             tags$strong(fname)),
+      downloadButton("dl_ufit_report", paste0("Download ", fname),
+                     class = "btn-sm btn-primary", icon = icon("download")),
       tags$small(style = "color:#888; margin-left:8px;",
                  paste0("(", round(file.size(path) / 1024, 0), " KB)")),
       tags$br(),
       tags$small(style = "color:#666;",
-        "File saved to: ",
-        tags$code(path))
+        "Saved to: ", tags$code(path))
     )
   })
+
+  output$dl_ufit_report <- downloadHandler(
+    filename = function() basename(ufit_report_path_rv() %||% "fpren_uf_it_report.pdf"),
+    content  = function(file) {
+      src <- ufit_report_path_rv()
+      if (!is.null(src) && file.exists(src)) file.copy(src, file)
+    },
+    contentType = "application/pdf"
+  )
 
   observeEvent(input$btn_gen_ufit_report, {
     if (!isTRUE(auth_rv$role == "admin")) {
